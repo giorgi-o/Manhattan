@@ -25,6 +25,7 @@ impl<'g> CarRenderer<'g> {
     pub const ENGLAND_MODE: bool = true;
 
     // const COLOUR: Color = RED;
+    const HEADLIGHT_COLOUR: Color = YELLOW;
 
     pub fn new(
         car: &'g Car,
@@ -68,7 +69,51 @@ impl<'g> CarRenderer<'g> {
         positive
     }
 
+    fn headlights_margin(&self) -> f32 {
+        Self::car_width() / 5.0
+    }
+
     pub fn render(&self) {
+        let rect = self.car_rect();
+        draw_rectangle(rect.x, rect.y, rect.w, rect.h, self.car.props.colour);
+
+        // draw headlights
+        let margin = self.headlights_margin();
+
+        let direction = self.car.position.road_section.direction;
+        let (x1, y1, x2, y2) = match direction {
+            Direction::Up => (
+                rect.left() + margin,
+                rect.top() + margin,
+                rect.right() - margin,
+                rect.top() + margin,
+            ),
+            Direction::Down => (
+                rect.left() + margin,
+                rect.bottom() - margin,
+                rect.right() - margin,
+                rect.bottom() - margin,
+            ),
+            Direction::Left => (
+                rect.left() + margin,
+                rect.top() + margin,
+                rect.left() + margin,
+                rect.bottom() - margin,
+            ),
+            Direction::Right => (
+                rect.right() - margin,
+                rect.top() + margin,
+                rect.right() - margin,
+                rect.bottom() - margin,
+            ),
+        };
+
+        let radius = margin / 2.0;
+        draw_circle(x1, y1, radius, Self::HEADLIGHT_COLOUR);
+        draw_circle(x2, y2, radius, Self::HEADLIGHT_COLOUR);
+    }
+
+    fn car_rect(&self) -> Rect {
         let road = self.road();
         let position = self.car.position;
         let orientation = road.orientation;
@@ -81,39 +126,7 @@ impl<'g> CarRenderer<'g> {
             section_position = max_section_position - section_position;
         }
 
-        // coordinate of the middle of the two road lanes
-        let road_middle = Lengths::from_vec2(road.rect.center()).get(orientation);
-
-        // let lower_road_side; // most negative of the two
-        // let upper_road_side;
-        // let on_positive_side_of_road = self.on_positive_side_of_road();
-
-        // if on_positive_side_of_road {
-        //     lower_road_side = road_middle;
-        //     upper_road_side = road_middle + RoadRenderer::WIDTH / 2.0;
-        // } else {
-        //     lower_road_side = road_middle - RoadRenderer::WIDTH / 2.0;
-        //     upper_road_side = road_middle;
-        // }
-
-        // let car_width_lower; // the lowest coord of the car's long side
-        // let car_width_upper;
-        // let car_length_lower;
-        // let car_length_upper; // the most positive coord of the car's short side
-        // if the car is going horizontally,
-        // car_width_* are the y coords
-        // car_length_* are the x coords
-        // because the car is longer than it is wide.
-        // sorry, couldn't think of a better way to represent this
-
-        // let section_lower_coord = RoadRenderer::WIDTH
-        //     + (RoadRenderer::section_lengths() + RoadRenderer::WIDTH)
-        //         * self.position.road_section.section_index as f32;
         let section_rect = road.section_rect(position.road_section.section_index);
-        // let section_lower_coord = Lengths {
-        //     v: section_rect.x,
-        //     h: section_rect.y,
-        // };
 
         // tmp: draw rectangle over current section
         // draw_rectangle(
@@ -159,33 +172,7 @@ impl<'g> CarRenderer<'g> {
             }
         }
 
-        // let rect = if orientation == Orientation::Horizontal {
-        //     Rect::new(
-        //         // section_lower_coord.get(orientation) + distance_from_section_start.get(orientation),
-        //         // lower_road_side,
-        //         section_rect.x + distance_from_section_start.h,
-        //         section_rect.y,
-        //         Self::car_length(),
-        //         Self::car_width(),
-        //     )
-        // } else {
-        //     Rect::new(
-        //         // lower_road_side,
-        //         // section_lower_coord.get(orientation) + distance_from_section_start.get(orientation),
-        //         section_rect.x,
-        //         section_rect.y + distance_from_section_start.v,
-        //         Self::car_width(),
-        //         Self::car_length(),
-        //     )
-        // };
-
-        draw_rectangle(
-            car_rect.x,
-            car_rect.y,
-            car_rect.w,
-            car_rect.h,
-            self.car.props.colour,
-        );
+        car_rect
     }
 
     fn road(&self) -> RoadRenderer<'g> {
