@@ -1,3 +1,5 @@
+use logic::grid::Grid;
+
 mod logic {
     pub mod grid;
     pub mod car;
@@ -5,13 +7,15 @@ mod logic {
 
 mod render {
     pub mod render_main;
+    pub mod util;
     pub mod grid;
     pub mod car;
     pub mod coords;
 }
 
 fn main() {
-    render::render_main::start();
+    let grid = Grid::new();
+    render::render_main::start(grid);
 }
 
 // fn tick() {

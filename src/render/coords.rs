@@ -1,31 +1,31 @@
+/*
 use macroquad::{
     prelude::Rect,
     window::{screen_height, screen_width},
 };
 
-use crate::logic::grid::{Grid, RoadId, RoadOrientation};
+use crate::logic::grid::Grid;
 
-use super::grid::GridRenderer;
+use super::grid::{GridRenderer, RoadOrientation};
 
-pub struct GridCoords {
-    horizontal: Vec<HorizontalRoadCoords>,
-    vertical: Vec<VerticalRoadCoords>,
+pub struct GridCoords<'g> {
+    grid: &'g Grid,
+    horizontal: Vec<HorizontalRoadCoords<'g>>,
+    vertical: Vec<VerticalRoadCoords<'g>>,
 }
 
-impl GridCoords {
-    pub fn new(grid: Grid) -> Self {
+impl<'g> GridCoords<'g> {
+    pub fn new(grid: &'g Grid) -> Self {
         let mut horizontal = Vec::new();
-        for index in 0..Grid::horizontal_roads() {
-            let coords = HorizontalRoadCoords {
-                grid: grid.clone(),
-                index,
-            };
+        for index in 0..Grid::HORIZONTAL_ROADS {
+            let coords = HorizontalRoadCoords { grid, index };
             horizontal.push(coords);
         }
 
         let vertical = Vec::new();
 
         Self {
+            grid,
             horizontal,
             vertical,
         }
@@ -36,7 +36,7 @@ pub trait RoadCoords {
     const WIDTH: f32 = 60.0;
     const OUTLINE_WIDTH: f32 = 2.0;
 
-    fn id(&self) -> RoadId;
+    fn index(&self) -> usize;
     fn orientation(&self) -> RoadOrientation;
 
     fn x1(&self) -> f32;
@@ -56,25 +56,22 @@ pub trait RoadCoords {
     }
 }
 
-pub struct HorizontalRoadCoords {
-    grid: Grid,
+pub struct HorizontalRoadCoords<'g> {
+    grid: &'g Grid,
     index: usize,
 }
 
-pub struct VerticalRoadCoords {
-    grid: Grid,
+pub struct VerticalRoadCoords<'g> {
+    grid: &'g Grid,
     index: usize,
 }
 
-impl RoadCoords for HorizontalRoadCoords {
+impl RoadCoords for HorizontalRoadCoords<'_> {
     fn orientation(&self) -> RoadOrientation {
         RoadOrientation::Horizontal
     }
-    fn id(&self) -> RoadId {
-        RoadId {
-            orientation: self.orientation(),
-            index: self.index,
-        }
+    fn index(&self) -> usize {
+        self.index
     }
 
     fn x1(&self) -> f32 {
@@ -93,15 +90,12 @@ impl RoadCoords for HorizontalRoadCoords {
     }
 }
 
-impl RoadCoords for VerticalRoadCoords {
+impl RoadCoords for VerticalRoadCoords<'_> {
     fn orientation(&self) -> RoadOrientation {
         RoadOrientation::Vertical
     }
-    fn id(&self) -> RoadId {
-        RoadId {
-            orientation: self.orientation(),
-            index: self.index,
-        }
+    fn index(&self) -> usize {
+        self.index
     }
 
     fn y1(&self) -> f32 {
@@ -119,3 +113,4 @@ impl RoadCoords for VerticalRoadCoords {
         Self::WIDTH
     }
 }
+*/
