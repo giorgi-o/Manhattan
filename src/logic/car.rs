@@ -1,7 +1,12 @@
 use macroquad::color::Color;
 use rand::{seq::SliceRandom, Rng};
 
-use super::grid::{Grid, RoadSection};
+use super::{
+    grid::{Grid, Orientation, RoadSection},
+    pathfinding::Path,
+};
+
+use macroquad::color::*;
 
 // use super::grid::{RoadId, RoadOrientation};
 
@@ -146,12 +151,15 @@ impl CarProps {
 
     fn random_colour() -> Color {
         let mut rng = rand::thread_rng();
-        Color {
-            r: rng.gen(),
-            g: rng.gen(),
-            b: rng.gen(),
-            a: 1.0,
-        }
+        // Color {
+        //     r: rng.gen(),
+        //     g: rng.gen(),
+        //     b: rng.gen(),
+        //     a: 1.0,
+        // }
+
+        const POSSIBLE_COLOURS: &[Color] = &[BLUE, RED, ORANGE];
+        *POSSIBLE_COLOURS.choose(&mut rng).unwrap()
     }
 }
 
@@ -193,15 +201,57 @@ pub enum CarDecision {
 }
 
 pub trait CarAgent {
-    fn turn(&self, position: &CarPosition, options: &[CarDecision]) -> CarDecision;
+    fn turn(&mut self, grid: &Grid, car: &Car) -> CarDecision;
+    fn path(&self) -> Option<&Path> {
+        None
+    }
 }
 
-pub struct RandomCar {}
+// temporary placeholder agent to put instead of the real agent
+pub struct NullAgent {}
 
-impl CarAgent for RandomCar {
-    fn turn(&self, _position: &CarPosition, options: &[CarDecision]) -> CarDecision {
+impl CarAgent for NullAgent {
+    fn turn(&mut self, _grid: &Grid, _car: &Car) -> CarDecision {
+        unreachable!()
+    }
+}
+
+pub struct RandomTurns {}
+
+impl CarAgent for RandomTurns {
+    fn turn(&mut self, _grid: &Grid, car: &Car) -> CarDecision {
+        // *options
+        //     .choose(&mut rand::thread_rng())
+        //     .expect("List of possible car decisions is empty")
+        let options = car.position.road_section.possible_decisions();
         *options
             .choose(&mut rand::thread_rng())
             .expect("List of possible car decisions is empty")
+    }
+}
+
+#[derive(Default)]
+pub struct RandomDestination {
+    path: Option<Path>,
+}
+
+impl CarAgent for RandomDestination {
+    fn turn(&mut self, _grid: &Grid, car: &Car) -> CarDecision {
+        if self.path.is_none() {
+            let destination = CarPosition::random(&mut rand::thread_rng());
+            let path = Path::find(car.position, destination);
+            self.path = Some(path);
+        }
+        let path = self.path.as_mut().unwrap();
+        path.pop_next_decision().unwrap_or_else(|| {
+            // we already arrived, delete path and recursively call ourselves
+            // to create new one
+            self.path = None;
+            self.turn(_grid, car)
+        })
+    }
+
+    fn path(&self) -> Option<&Path> {
+        self.path.as_ref()
     }
 }

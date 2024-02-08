@@ -8,3 +8,8 @@ edition = "2021"
 [dependencies]
 macroquad = "0.4.4"
 rand = "0.8.5"
+pathfinding = "4.8.2"
+
+# disable mir optimisations in debug mode (does this work?)
+[build]
+rustflags = ["-Z", "mir-opt-level=0"]

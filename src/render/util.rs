@@ -1,5 +1,7 @@
 use std::ops::{Add, Div, Mul, Sub};
 
+use macroquad::prelude::*;
+
 use crate::logic::grid::Orientation;
 
 // util struct for abstracting over whether we are in horizontal or vertical
@@ -175,5 +177,68 @@ pub trait ToLengths {
 impl ToLengths for f32 {
     fn lengths(self) -> Lengths {
         Lengths { h: self, v: self }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Line {
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+}
+
+impl Line {
+    pub fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        Self { x1, y1, x2, y2 }
+    }
+
+    pub fn draw(self, colour: Color) {
+        draw_line(self.x1, self.y1, self.x2, self.y2, 1.0, colour);
+    }
+
+    pub fn flip(&mut self) {
+        std::mem::swap(&mut self.x1, &mut self.x2);
+        std::mem::swap(&mut self.y1, &mut self.y2);
+    }
+
+    pub fn through_rect_middle(rect: Rect, orientation: Orientation) -> Self {
+        match orientation {
+            Orientation::Horizontal => {
+                let y = rect.top() + rect.h / 2.0;
+                Self {
+                    x1: rect.left(),
+                    y1: y,
+                    x2: rect.right(),
+                    y2: y,
+                }
+            }
+            Orientation::Vertical => {
+                let x = rect.left() + rect.w / 2.0;
+                Self {
+                    x1: x,
+                    y1: rect.top(),
+                    x2: x,
+                    y2: rect.bottom(),
+                }
+            }
+        }
+    }
+
+    pub fn intersection(self, other: Line) -> Option<(f32, f32)> {
+        // https://en.wikipedia.org/wiki/Line%E2%80%93line_intersection#Given_two_points_on_each_line
+        let (x1, y1, x2, y2) = (self.x1, self.y1, self.x2, self.y2);
+        let (x3, y3, x4, y4) = (other.x1, other.y1, other.x2, other.y2);
+
+        let x_denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+        let y_denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+        if x_denom == 0.0 || y_denom == 0.0 {
+            return None; // parallel
+        }
+
+        let x = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / x_denom;
+        let y = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / y_denom;
+
+        Some((x, y))
     }
 }

@@ -9,23 +9,24 @@ use super::{
 
 pub struct GridRenderer<'g> {
     pub grid: &'g Grid,
+    pub roads: Vec<RoadRenderer<'g>>,
 }
 
 impl<'g> GridRenderer<'g> {
     pub const MARGIN: f32 = 60.0;
 
     pub fn new(grid: &'g Grid) -> Self {
-        Self { grid }
+        let roads = Self::roads(grid);
+        Self { grid, roads }
     }
 
     pub fn render(&self) {
-        let roads = self.roads();
-        self.render_roads(&roads);
-        self.render_intersections(&roads);
+        self.render_roads();
+        self.render_intersections();
         self.draw_grid_outline();
 
         for car in self.grid.cars() {
-            let car_renderer = CarRenderer::new(car, self, &roads);
+            let car_renderer = CarRenderer::new(car, self);
             car_renderer.render();
         }
 
@@ -33,18 +34,18 @@ impl<'g> GridRenderer<'g> {
         traffic_lights_renderer.render_all();
     }
 
-    fn roads(&self) -> Vec<RoadRenderer> {
+    fn roads(grid: &'g Grid) -> Vec<RoadRenderer> {
         let mut roads = Vec::new();
 
         // horizontal
         for i in 0..Grid::HORIZONTAL_ROADS {
-            let road = RoadRenderer::new(Orientation::Horizontal, i, self.grid);
+            let road = RoadRenderer::new(Orientation::Horizontal, i as isize, grid);
             roads.push(road);
         }
 
         // vertical
         for i in 0..Grid::VERTICAL_ROADS {
-            let road = RoadRenderer::new(Orientation::Vertical, i, self.grid);
+            let road = RoadRenderer::new(Orientation::Vertical, i as isize, grid);
             roads.push(road);
         }
 
@@ -59,18 +60,20 @@ impl<'g> GridRenderer<'g> {
         )
     }
 
-    fn render_roads(&self, roads: &[RoadRenderer]) {
-        for road in roads {
+    fn render_roads(&self) {
+        for road in &self.roads {
             road.render();
         }
     }
 
-    fn render_intersections(&self, roads: &[RoadRenderer]) {
-        for horizontal_road in roads
+    fn render_intersections(&self) {
+        for horizontal_road in self
+            .roads
             .iter()
             .filter(|r| r.orientation == Orientation::Horizontal)
         {
-            for vertical_road in roads
+            for vertical_road in self
+                .roads
                 .iter()
                 .filter(|r| r.orientation == Orientation::Vertical)
             {
@@ -101,6 +104,7 @@ impl<'g> GridRenderer<'g> {
         );
     }
 
+    // isn't this just section_lengths() ?
     pub fn space_between_roads(orientation: Orientation) -> f32 {
         let street_count = match orientation {
             Orientation::Horizontal => Grid::HORIZONTAL_ROADS,
@@ -129,7 +133,7 @@ impl<'g> GridRenderer<'g> {
 pub struct RoadRenderer<'g> {
     pub grid: &'g Grid,
     pub orientation: Orientation,
-    pub index: usize,
+    pub index: isize,
     pub rect: Rect,
 }
 
@@ -146,7 +150,10 @@ impl<'g> RoadRenderer<'g> {
     pub const OUTLINE_COLOUR: Color = BLACK;
     pub const LANE_DIVIDER_COLOUR: Color = WHITE;
 
-    fn new(orientation: Orientation, index: usize, grid: &'g Grid) -> Self {
+    fn new<I: TryInto<isize>>(orientation: Orientation, index: I, grid: &'g Grid) -> Self {
+        let Ok(index) = index.try_into() else {
+            unreachable!() // index is too big for isize
+        };
         let road_offset = GridRenderer::MARGIN
             + index as f32 * (RoadRenderer::WIDTH + GridRenderer::space_between_roads(orientation));
 
@@ -267,7 +274,7 @@ impl<'g> RoadRenderer<'g> {
         (GridRenderer::grid_dimensions() - road_width * perpendicular_road_counts) / section_counts
     }
 
-    pub fn section_rect(&self, section_index: usize) -> Rect {
+    pub fn section_rect(&self, section_index: isize) -> Rect {
         let orientation = self.orientation;
 
         // get the rect of the entire road
@@ -289,6 +296,40 @@ impl<'g> RoadRenderer<'g> {
 
         rect
     }
+
+    pub fn on_positive_side_of_road(direction: Direction) -> bool {
+        // the "positive" side is the road lane furthest from 0, 0
+        // 0, 0 is top left
+
+        let mut positive = direction == Direction::Down || direction == Direction::Left;
+        if !CarRenderer::ENGLAND_MODE {
+            positive = !positive;
+        }
+
+        positive
+    }
+
+    pub fn section_rect_on_side(&self, section_index: isize, direction: Direction) -> Rect {
+        let mut section_rect = self.section_rect(section_index);
+
+        let positive_side = Self::on_positive_side_of_road(direction);
+        match self.orientation {
+            Orientation::Horizontal => {
+                section_rect.h /= 2.0;
+                if positive_side {
+                    section_rect.y += section_rect.h;
+                }
+            }
+            Orientation::Vertical => {
+                section_rect.w /= 2.0;
+                if positive_side {
+                    section_rect.x += section_rect.w;
+                }
+            }
+        }
+
+        section_rect
+    }
 }
 
 struct TrafficLightsRenderer<'g> {
@@ -296,9 +337,11 @@ struct TrafficLightsRenderer<'g> {
 }
 
 impl<'g> TrafficLightsRenderer<'g> {
-    const SQUARE_SIZE: f32 = 25.0;
-    const CIRCLE_RADIUS: f32 = 10.0;
-    const DISTANCE_FROM_ROAD: f32 = 10.0;
+    const SQUARE_SIZE: f32 = 15.0;
+    const CIRCLE_RADIUS: f32 = 5.0;
+    // const DISTANCE_FROM_ROAD: f32 = 10.0;
+    const SIDE_MARGIN: f32 = 3.0;
+    const BACK_MARGIN: f32 = 5.0;
 
     const SQUARE_COLOUR: Color = GRAY;
     const RED: Color = RED;
@@ -309,23 +352,25 @@ impl<'g> TrafficLightsRenderer<'g> {
     }
 
     pub fn render_all(&self) {
+        self.render_all_lights();
+    }
+
+    fn render_all_lights(&self) {
         // go through the empty spaces between the roads
         // and draw 4 traffic lights each time
 
         for x in -1..Grid::VERTICAL_ROADS as isize {
             for y in -1..Grid::HORIZONTAL_ROADS as isize {
                 // the road section to the left of the blank space
-                let right = RoadSection {
-                    direction: Direction::Up,
-                    road_index: (x + 1) as usize,
-                    section_index: y as usize,
-                };
+                let right = RoadSection::get_raw(Direction::Up, x + 1, y);
+                // println!("right: {:?}", right);
+
                 let right_road_renderer = self.grid_renderer.road_at(right);
                 let right_rect = right_road_renderer.section_rect(right.section_index);
 
                 let top_right_corner = Vec2::new(right_rect.left(), right_rect.top());
                 let section_lengths = RoadRenderer::section_lengths();
-                let mut rect = Rect::new(
+                let rect = Rect::new(
                     top_right_corner.x - section_lengths.h,
                     top_right_corner.y,
                     section_lengths.h,
@@ -334,15 +379,16 @@ impl<'g> TrafficLightsRenderer<'g> {
 
                 // "inner rect" whose 4 corners are the centers of the 4
                 // traffic light squares
-                let offset = Self::DISTANCE_FROM_ROAD + Self::SQUARE_SIZE / 2.0;
-                rect.x += offset;
-                rect.y += offset;
-                rect.w -= offset * 2.0;
-                rect.h -= offset * 2.0;
-                // rect.x += Self::DISTANCE_FROM_ROAD;
-                // rect.y += Self::DISTANCE_FROM_ROAD;
-                // rect.w -= Self::DISTANCE_FROM_ROAD * 2.0 + Self::SQUARE_SIZE;
-                // rect.h -= Self::DISTANCE_FROM_ROAD * 2.0 + Self::SQUARE_SIZE;
+                // rect.x += offset;
+                // rect.y += offset;
+                // rect.w -= offset * 2.0;
+                // rect.h -= offset * 2.0;
+
+                let mut back_offset = Self::BACK_MARGIN + Self::SQUARE_SIZE / 2.0;
+                let mut side_offset = Self::SIDE_MARGIN + Self::SQUARE_SIZE / 2.0;
+                if !CarRenderer::ENGLAND_MODE {
+                    (side_offset, back_offset) = (back_offset, side_offset);
+                }
 
                 // let topleft_direction = match CarRenderer::ENGLAND_MODE {
                 //     true => Direction::Right,
@@ -360,26 +406,30 @@ impl<'g> TrafficLightsRenderer<'g> {
                 // let top = RoadSection::get(i(Direction::Left), y, x);
                 // let right = RoadSection::get(i(Direction::Up), x + 1, y);
                 // let bottom = RoadSection::get(i(Direction::Right), y + 1, x);
-                let left = (x >= 0).then(|| RoadSection {
-                    direction: i(Direction::Down),
-                    road_index: x as usize,
-                    section_index: y as usize,
-                });
-                let top = (y >= 0).then(|| RoadSection {
-                    direction: i(Direction::Left),
-                    road_index: y as usize,
-                    section_index: x as usize,
-                });
-                let right = RoadSection {
-                    direction: i(Direction::Up),
-                    road_index: (x + 1) as usize,
-                    section_index: y as usize,
-                };
-                let bottom = RoadSection {
-                    direction: i(Direction::Right),
-                    road_index: (y + 1) as usize,
-                    section_index: x as usize,
-                };
+                // let left = (x >= 0).then(|| RoadSection {
+                //     direction: i(Direction::Down),
+                //     road_index: x as usize,
+                //     section_index: y as usize,
+                // });
+                let left = (x >= 0).then(|| RoadSection::get_raw(i(Direction::Down), x, y));
+                // let top = (y >= 0).then(|| RoadSection {
+                //     direction: i(Direction::Left),
+                //     road_index: y as usize,
+                //     section_index: x as usize,
+                // });
+                let top = (y >= 0).then(|| RoadSection::get_raw(i(Direction::Left), y, x));
+                // let right = RoadSection {
+                //     direction: i(Direction::Up),
+                //     road_index: (x + 1) as usize,
+                //     section_index: y as usize,
+                // };
+                let right = RoadSection::get_raw(i(Direction::Up), x + 1, y);
+                // let bottom = RoadSection {
+                //     direction: i(Direction::Right),
+                //     road_index: (y + 1) as usize,
+                //     section_index: x as usize,
+                // };
+                let bottom = RoadSection::get_raw(i(Direction::Right), y + 1, x);
 
                 // now, we draw all 4 traffic lights
                 if let Some(top) = top {
@@ -390,8 +440,8 @@ impl<'g> TrafficLightsRenderer<'g> {
                                 true => top,
                                 false => left,
                             },
-                            rect.left(),
-                            rect.top(),
+                            rect.left() + back_offset,
+                            rect.top() + side_offset,
                         );
                     }
                     // top-right
@@ -400,8 +450,8 @@ impl<'g> TrafficLightsRenderer<'g> {
                             true => right,
                             false => top,
                         },
-                        rect.right(),
-                        rect.top(),
+                        rect.right() - side_offset,
+                        rect.top() + back_offset,
                     );
                 }
                 // bottom-right
@@ -410,8 +460,8 @@ impl<'g> TrafficLightsRenderer<'g> {
                         true => bottom,
                         false => right,
                     },
-                    rect.right(),
-                    rect.bottom(),
+                    rect.right() - back_offset,
+                    rect.bottom() - side_offset,
                 );
                 if let Some(left) = left {
                     // bottom-left
@@ -420,44 +470,15 @@ impl<'g> TrafficLightsRenderer<'g> {
                             true => left,
                             false => bottom,
                         },
-                        rect.left(),
-                        rect.bottom(),
+                        rect.left() + side_offset,
+                        rect.bottom() - back_offset,
                     );
                 }
-
-                // top-left
-                // self.render_light(
-                //     left,
-                //     rect.top(),
-                //     rect.left(),
-                // );
-                // // top-right
-                // self.render_light(
-                //     RoadSection::get(topleft_direction.clockwise(), x + 1, y),
-                //     rect.top(),
-                //     rect.right(),
-                // );
-                // // bottom-right
-                // self.render_light(
-                //     RoadSection::get(topleft_direction.clockwise().clockwise(), x + 1, y + 1),
-                //     rect.bottom(),
-                //     rect.right(),
-                // );
-                // // bottom-left
-                // self.render_light(
-                //     RoadSection::get(topleft_direction.counterclockwise(), x, y + 1),
-                //     rect.bottom(),
-                //     rect.left(),
-                // );
             }
         }
     }
 
     fn render_light(&self, section: RoadSection, cx: f32, cy: f32) {
-        // do not draw ones that don't exist
-        // if cx < 0.0 || cx > screen_width() || cy < 0.0 || cy > screen_height() {
-        //     return;
-        // }
         if section.valid().is_err() {
             return;
         }

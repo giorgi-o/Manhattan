@@ -4,10 +4,7 @@ use std::{
 };
 
 use super::grid::GridRenderer;
-use crate::logic::{
-    car::{CarProps, RandomCar},
-    grid::Grid,
-};
+use crate::logic::grid::Grid;
 
 use macroquad::prelude::*;
 
@@ -15,7 +12,7 @@ static GAME: OnceLock<Mutex<Game>> = OnceLock::new();
 
 pub fn start(grid: Grid) {
     // macroquad's main() can't take any arguments.
-    // so we sneak the game in through the back.
+    // so we sneak the game in through the back door.
 
     let game = Game { grid };
     let mutex = Mutex::new(game);
@@ -57,19 +54,9 @@ pub struct Game {
 }
 
 impl Game {
-    const BACKGROUND_COLOUR: Color = WHITE;
-
     pub const TICKS_PER_SEC: usize = 20;
 
-    fn new() -> Self {
-        let npc_car = RandomCar {};
-        let npc_car = CarProps::new(npc_car, 10);
-
-        let mut grid = Grid::new();
-        grid.add_car(npc_car);
-
-        Self { grid }
-    }
+    const BACKGROUND_COLOUR: Color = WHITE;
 
     fn tick(&mut self) {
         self.grid.tick();

@@ -1,20 +1,18 @@
 use macroquad::prelude::*;
 
 use crate::logic::{
-    car::Car,
-    grid::{Direction, Orientation},
+    car::{Car, CarPosition},
+    grid::{Direction, Orientation, RoadSection},
 };
 
 use super::{
     grid::{GridRenderer, RoadRenderer},
-    util::Lengths,
+    util::Line,
 };
 
 pub struct CarRenderer<'g> {
     car: &'g Car,
     grid_renderer: &'g GridRenderer<'g>,
-    road_renderers: &'g Vec<RoadRenderer<'g>>,
-    // position: &'g CarPosition,
 }
 
 impl<'g> CarRenderer<'g> {
@@ -22,23 +20,14 @@ impl<'g> CarRenderer<'g> {
     const BETWEEN_CARS_MARGIN: f32 = 1.0;
 
     // whether we drive on the left side of the road
-    pub const ENGLAND_MODE: bool = true;
+    pub const ENGLAND_MODE: bool = true; // this should really be somewhere else...
 
     // const COLOUR: Color = RED;
     const HEADLIGHT_COLOUR: Color = YELLOW;
+    const PATH_COLOUR: Color = GREEN;
 
-    pub fn new(
-        car: &'g Car,
-        grid_renderer: &'g GridRenderer<'g>,
-        road_renderers: &'g Vec<RoadRenderer<'g>>,
-        // position: &'g CarPosition,
-    ) -> Self {
-        Self {
-            car,
-            grid_renderer,
-            road_renderers,
-            // position,
-        }
+    pub fn new(car: &'g Car, grid_renderer: &'g GridRenderer<'g>) -> Self {
+        Self { car, grid_renderer }
     }
 
     pub fn car_length() -> f32 {
@@ -55,26 +44,17 @@ impl<'g> CarRenderer<'g> {
         RoadRenderer::WIDTH / 2.0 - Self::ROAD_EDGE_MARGIN * 2.0
     }
 
-    pub fn on_positive_side_of_road(&self) -> bool {
-        // the "positive" side is the road lane furthest from 0, 0
-        // 0, 0 is top left
-
-        let direction = self.car.position.road_section.direction;
-
-        let mut positive = direction == Direction::Down || direction == Direction::Left;
-        if !Self::ENGLAND_MODE {
-            positive = !positive;
-        }
-
-        positive
-    }
-
     fn headlights_margin(&self) -> f32 {
         Self::car_width() / 5.0
     }
 
     pub fn render(&self) {
-        let rect = self.car_rect();
+        self.render_car();
+        self.render_path();
+    }
+
+    pub fn render_car(&self) {
+        let rect = self.rect();
         draw_rectangle(rect.x, rect.y, rect.w, rect.h, self.car.props.colour);
 
         // draw headlights
@@ -113,9 +93,11 @@ impl<'g> CarRenderer<'g> {
         draw_circle(x2, y2, radius, Self::HEADLIGHT_COLOUR);
     }
 
-    fn car_rect(&self) -> Rect {
-        let road = self.road();
-        let position = self.car.position;
+    fn rect(&self) -> Rect {
+        Self::rect_from_position(self.car.position, &self.road())
+    }
+
+    fn rect_from_position(position: CarPosition, road: &RoadRenderer) -> Rect {
         let orientation = road.orientation;
 
         let mut section_position = position.position_in_section;
@@ -126,7 +108,9 @@ impl<'g> CarRenderer<'g> {
             section_position = max_section_position - section_position;
         }
 
-        let section_rect = road.section_rect(position.road_section.section_index);
+        let direction = position.road_section.direction;
+        let section_rect =
+            road.section_rect_on_side(position.road_section.section_index, direction);
 
         // tmp: draw rectangle over current section
         // draw_rectangle(
@@ -164,16 +148,160 @@ impl<'g> CarRenderer<'g> {
         }
 
         // adjust side of the road
-        if self.on_positive_side_of_road() {
-            if orientation == Orientation::Horizontal {
-                car_rect.y += RoadRenderer::WIDTH / 2.0;
-            } else {
-                car_rect.x += RoadRenderer::WIDTH / 2.0;
-            }
-        }
+        // if self.on_positive_side_of_road() {
+        //     if orientation == Orientation::Horizontal {
+        //         car_rect.y += RoadRenderer::WIDTH / 2.0;
+        //     } else {
+        //         car_rect.x += RoadRenderer::WIDTH / 2.0;
+        //     }
+        // }
 
         car_rect
     }
+
+    fn render_path(&self) {
+        let agent = &self.car.props.agent;
+        let Some(path) = agent.path() else {
+            return;
+        };
+
+        let mut sections = path.sections.iter().peekable();
+
+        let mut start = PathLineBound::Car(self.car.position);
+        // for path_section in sections {
+        while let Some(path_section) = sections.next() {
+            let end = match sections.peek() {
+                Some(next_section) => {
+                    PathLineBound::SectionsIntersection(((*path_section), **next_section))
+                }
+                None => PathLineBound::Car(path.destination),
+            };
+
+            // self.render_path_line(*path_section, start, end);
+            self.render_path_line(start, end);
+
+            start = end;
+        }
+    }
+
+    fn render_path_line(&self, start: PathLineBound, end: PathLineBound) {
+        let (x1, y1) = self.get_line_xy(start, true);
+        let (x2, y2) = self.get_line_xy(end, false);
+
+        let line = Line { x1, y1, x2, y2 };
+        line.draw(Self::PATH_COLOUR);
+    }
+
+    /*fn render_path_line(&self, current: RoadSection, start: PathLineBound, end: PathLineBound) {
+        println!("rendering path line: {:?} -> {:?}", start, end);
+
+        let road = self.road();
+        let section_rect = road.section_rect_on_side(current.section_index, current.direction);
+        let orientation = road.orientation;
+
+        let section_line = Line::through_rect_middle(section_rect, orientation);
+        let mut path_line = Line::new(0.0, 0.0, 0.0, 0.0);
+
+        match start {
+            PathLineBound::SectionsIntersection((s1, s2)) => {
+                let other_section_rect = road.section_rect_on_side(s.section_index, s.direction);
+                let other_section_line =
+                    Line::through_rect_middle(other_section_rect, s.direction.orientation());
+                match section_line.intersection(other_section_line) {
+                    Some((x, y)) => {
+                        path_line.x1 = x;
+                        path_line.y1 = y;
+                    }
+                    None => {
+                        let section_center = section_rect.center();
+                        let other_section_start =
+                            Vec2::new(other_section_line.x1, other_section_line.y1);
+                        let other_section_end =
+                            Vec2::new(other_section_line.x2, other_section_line.y2);
+                        let closest_point = if section_center.distance_squared(other_section_start)
+                            < section_center.distance_squared(other_section_end)
+                        {
+                            other_section_start
+                        } else {
+                            other_section_end
+                        };
+
+                        path_line.x1 = closest_point.x;
+                        path_line.y1 = closest_point.y;
+                    }
+                }
+            }
+            PathLineBound::Car(c) => {
+                assert_eq!(c, self.car.position); // to make things simpler for now
+                let car_rect = self.rect();
+                let line_through_car = Line::through_rect_middle(car_rect, orientation);
+                let (x, y) = match self.car.position.road_section.direction.towards_positive() {
+                    false => (line_through_car.x1, line_through_car.y1),
+                    true => (line_through_car.x2, line_through_car.y2),
+                };
+                path_line.x1 = x;
+                path_line.y1 = y;
+            }
+        }
+
+        match end {
+            PathLineBound::Section(s) => {
+                let other_section_rect = road.section_rect_on_side(s.section_index, s.direction);
+                let other_section_line =
+                    Line::through_rect_middle(other_section_rect, s.direction.orientation());
+                match section_line.intersection(other_section_line) {
+                    Some((x, y)) => {
+                        path_line.x2 = x;
+                        path_line.y2 = y;
+                    }
+                    None => {
+                        let section_center = section_rect.center();
+                        let other_section_start =
+                            Vec2::new(other_section_line.x1, other_section_line.y1);
+                        let other_section_end =
+                            Vec2::new(other_section_line.x2, other_section_line.y2);
+                        let closest_point = if section_center.distance_squared(other_section_start)
+                            < section_center.distance_squared(other_section_end)
+                        {
+                            other_section_start
+                        } else {
+                            other_section_end
+                        };
+
+                        path_line.x2 = closest_point.x;
+                        path_line.y2 = closest_point.y;
+                    }
+                }
+            }
+            PathLineBound::Car(c) => {
+                let mut position_in_section = c.position_in_section;
+                let direction = c.road_section.direction;
+                let towards_positive = direction.towards_positive();
+                if !towards_positive {
+                    position_in_section = direction.max_position_in_section() - position_in_section;
+                }
+
+                let section_rect =
+                    road.section_rect_on_side(c.road_section.section_index, direction);
+                match orientation {
+                    Orientation::Horizontal => {
+                        path_line.y2 = section_rect.top() + section_rect.h / 2.0;
+                        path_line.x1 = section_rect.left()
+                            + Self::car_length() / 2.0
+                            + (position_in_section as f32 * Self::car_length());
+                    }
+                    Orientation::Vertical => {
+                        path_line.x2 = section_rect.left() + section_rect.w / 2.0;
+                        path_line.y1 = section_rect.top()
+                            + Self::car_length() / 2.0
+                            + (position_in_section as f32 * Self::car_length());
+                    }
+                }
+            }
+        }
+
+        path_line.draw(Self::PATH_COLOUR);
+    }*/
 
     fn road(&self) -> RoadRenderer<'g> {
         let road_section = self.car.position.road_section;
@@ -187,4 +315,67 @@ impl<'g> CarRenderer<'g> {
         //     .unwrap()
         self.grid_renderer.road_at(road_section)
     }
+
+    fn get_line_xy(&self, line_bound: PathLineBound, start: bool) -> (f32, f32) {
+        match line_bound {
+            PathLineBound::Car(car_pos) => {
+                // let road = self.road();
+                let road = self.grid_renderer.road_at(car_pos.road_section);
+
+                // let mut position_in_section = car_pos.position_in_section;
+                // let direction = car_pos.road_section.direction;
+                // let towards_positive = direction.towards_positive();
+                // if !towards_positive {
+                //     position_in_section = direction.max_position_in_section() - position_in_section;
+                // }
+
+                // let section_rect =
+                //     road.section_rect_on_side(car_pos.road_section.section_index, direction);
+
+                let car_rect = Self::rect_from_position(car_pos, &road);
+                let line_through_car = Line::through_rect_middle(car_rect, road.orientation);
+
+                let towards_positive = car_pos.road_section.direction.towards_positive();
+                if towards_positive && start {
+                    return (line_through_car.x2, line_through_car.y2);
+                } else {
+                    return (line_through_car.x1, line_through_car.y1);
+                }
+            }
+
+            PathLineBound::SectionsIntersection((s1, s2)) => {
+                let road1 = self.grid_renderer.road_at(s1);
+                let road2 = self.grid_renderer.road_at(s2);
+
+                let rect1 = road1.section_rect_on_side(s1.section_index, s1.direction);
+                let rect2 = road2.section_rect_on_side(s2.section_index, s2.direction);
+
+                let line1 = Line::through_rect_middle(rect1, road1.orientation);
+                let line2 = Line::through_rect_middle(rect2, road2.orientation);
+
+                let intersection = line1.intersection(line2);
+
+                let (x, y) = match intersection {
+                    Some((x, y)) => (x, y),
+                    None => {
+                        // they are parallel, i.e. two sections in straight line
+
+                        // note: if s1 is behind s2, this will cause the line
+                        // to go all the way across both sections. which is fine
+                        // since the next section will just re-draw the same line
+                        (line2.x1, line2.y1)
+                    }
+                };
+
+                return (x, y);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PathLineBound {
+    // start or end
+    Car(CarPosition),
+    SectionsIntersection((RoadSection, RoadSection)),
 }

@@ -3,6 +3,8 @@ use logic::grid::Grid;
 mod logic {
     pub mod grid;
     pub mod car;
+    pub mod pathfinding;
+    pub mod passenger;
 }
 
 mod render {

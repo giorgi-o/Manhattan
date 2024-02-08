@@ -7,9 +7,14 @@ use rand::Rng;
 
 // use crate::logic::car::CarState;
 
-use crate::{logic::car::NextCarPosition, render::render_main::Game};
+use crate::{
+    logic::car::{NextCarPosition, NullAgent},
+    render::render_main::Game,
+};
 
-use super::car::{Car, CarAgent, CarDecision, CarPosition, CarProps, RandomCar};
+use super::car::{
+    Car, CarAgent, CarDecision, CarPosition, CarProps, RandomDestination, RandomTurns,
+};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Orientation {
@@ -22,6 +27,33 @@ impl Orientation {
         match self {
             Orientation::Horizontal => Orientation::Vertical,
             Orientation::Vertical => Orientation::Horizontal,
+        }
+    }
+
+    pub fn direction(self, towards_positive: bool) -> Direction {
+        match (self, towards_positive) {
+            (Orientation::Horizontal, true) => Direction::Right,
+            (Orientation::Horizontal, false) => Direction::Left,
+            (Orientation::Vertical, true) => Direction::Down,
+            (Orientation::Vertical, false) => Direction::Up,
+        }
+    }
+
+    pub fn max_road_index(self) -> usize {
+        match self {
+            Self::Horizontal => Grid::HORIZONTAL_ROADS - 1,
+            Self::Vertical => Grid::VERTICAL_ROADS - 1,
+        }
+    }
+
+    pub fn max_section_index(self) -> usize {
+        self.other().max_road_index() - 1
+    }
+
+    pub fn max_position_in_section(self) -> usize {
+        match self {
+            Self::Horizontal => Grid::HORIZONTAL_SECTION_SLOTS - 1,
+            Self::Vertical => Grid::VERTICAL_SECTION_SLOTS - 1,
         }
     }
 }
@@ -116,23 +148,54 @@ impl Direction {
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub struct RoadSection {
-    pub road_index: usize,
-    pub section_index: usize,
+    // isize (not usize) because it makes rendering traffic lights easier
+    pub road_index: isize,
+    pub section_index: isize,
     pub direction: Direction,
     // both indexes start from 0
 }
 
 impl RoadSection {
+    // road() and section() are for when you know it's positive (unsigned)
+
+    pub fn road(self) -> usize {
+        if self.road_index < 0 || self.road_index as usize > self.direction.max_road_index() {
+            panic!(
+                "Invalid road index {} (max {})",
+                self.road_index,
+                self.direction.max_road_index()
+            )
+        }
+
+        self.road_index as usize
+    }
+
+    pub fn section(self) -> usize {
+        if self.section_index < 0
+            || self.section_index as usize > self.direction.max_section_index()
+        {
+            panic!(
+                "Invalid section index {} (max {})",
+                self.section_index,
+                self.direction.max_section_index()
+            )
+        }
+
+        self.section_index as usize
+    }
+
     pub fn get(direction: Direction, road_index: usize, section_index: usize) -> Self {
-        let this = Self {
+        let this = Self::get_raw(direction, road_index as isize, section_index as isize);
+        this.valid().unwrap();
+        this
+    }
+
+    pub fn get_raw(direction: Direction, road_index: isize, section_index: isize) -> Self {
+        Self {
             direction,
             road_index,
             section_index,
-        };
-
-        this.valid().unwrap();
-
-        this
+        }
     }
 
     pub fn all() -> Vec<Self> {
@@ -142,11 +205,7 @@ impl RoadSection {
         for road_index in 0..Grid::HORIZONTAL_ROADS {
             for section_index in 0..Grid::VERTICAL_ROADS - 1 {
                 for direction in [Direction::Left, Direction::Right] {
-                    let this = Self {
-                        road_index,
-                        section_index,
-                        direction,
-                    };
+                    let this = Self::get(direction, road_index, section_index);
                     all.push(this);
                 }
             }
@@ -156,11 +215,7 @@ impl RoadSection {
         for road_index in 0..Grid::VERTICAL_ROADS {
             for section_index in 0..Grid::HORIZONTAL_ROADS - 1 {
                 for direction in [Direction::Up, Direction::Down] {
-                    let this = Self {
-                        road_index,
-                        section_index,
-                        direction,
-                    };
+                    let this = Self::get(direction, road_index, section_index);
                     all.push(this);
                 }
             }
@@ -174,15 +229,18 @@ impl RoadSection {
     pub fn random(mut rng: impl Rng) -> Self {
         let direction = Direction::random(&mut rng);
 
-        Self {
-            direction,
-            road_index: rng.gen_range(0..=direction.max_road_index()),
-            section_index: rng.gen_range(0..=direction.max_section_index()),
-        }
+        // Self {
+        //     direction,
+        //     road_index: rng.gen_range(0..=direction.max_road_index()),
+        //     section_index: rng.gen_range(0..=direction.max_section_index()),
+        // }
+        let road_index = rng.gen_range(0..=direction.max_road_index());
+        let section_index = rng.gen_range(0..=direction.max_section_index());
+        Self::get(direction, road_index, section_index)
     }
 
-    pub fn valid(&self) -> Result<(), String> {
-        if self.road_index > self.direction.max_road_index() {
+    pub fn valid(self) -> Result<(), String> {
+        if self.road_index < 0 || self.road_index as usize > self.direction.max_road_index() {
             return Err(format!(
                 "Road {} going {:?} doesn't exist! (max {})",
                 self.road_index,
@@ -191,7 +249,9 @@ impl RoadSection {
             ));
         }
 
-        if self.section_index > self.direction.max_section_index() {
+        if self.section_index < 0
+            || self.section_index as usize > self.direction.max_section_index()
+        {
             return Err(format!(
                 "Section {} going {:?} doesn't exist! (max {})",
                 self.section_index,
@@ -203,8 +263,8 @@ impl RoadSection {
         Ok(())
     }
 
-    pub fn go_straight(&self) -> Option<Self> {
-        let new_section_index = self.section_index as isize + self.direction.offset();
+    pub fn go_straight(self) -> Option<Self> {
+        let new_section_index = self.section_index + self.direction.offset();
         if new_section_index < 0 {
             return None;
         }
@@ -212,7 +272,7 @@ impl RoadSection {
         let next = Self {
             direction: self.direction,
             road_index: self.road_index,
-            section_index: new_section_index as usize,
+            section_index: new_section_index,
         };
 
         match next.valid() {
@@ -221,7 +281,7 @@ impl RoadSection {
         }
     }
 
-    fn turn(&self, right: bool) -> Option<Self> {
+    fn turn(self, right: bool) -> Option<Self> {
         let new_direction = match right {
             true => self.direction.clockwise(),
             false => self.direction.counterclockwise(),
@@ -239,7 +299,7 @@ impl RoadSection {
         };
         let new_road_index = self.section_index + new_road_index_offset;
 
-        if new_road_index > new_direction.max_road_index() {
+        if new_road_index as usize > new_direction.max_road_index() {
             return None;
         }
 
@@ -247,7 +307,7 @@ impl RoadSection {
             true => 0,
             false => -1,
         };
-        let new_section_index = self.road_index as isize + new_section_index_offset;
+        let new_section_index = self.road_index + new_section_index_offset;
 
         if new_section_index < 0 || new_section_index as usize > new_direction.max_section_index() {
             return None;
@@ -256,44 +316,13 @@ impl RoadSection {
         let next = Self {
             direction: new_direction,
             road_index: new_road_index,
-            section_index: new_section_index as usize,
+            section_index: new_section_index,
         };
         assert!(next.valid().is_ok());
         Some(next)
-
-        /*let new_direction = match right {
-            true => self.direction.clockwise(),
-            false => self.direction.counterclockwise(),
-        };
-
-        let section_to_road_offset = match new_direction.towards_positive() {
-            true => 1,
-            false => 0,
-        };
-        let new_road_index = self.section_index + section_to_road_offset;
-        if new_road_index > new_direction.max_road_index() {
-            return None;
-        }
-
-        let road_to_section_offset = match new_direction.towards_positive() {
-            true => 0,
-            false => -1,
-        };
-        let new_section_index = self.road_index as isize + road_to_section_offset;
-        if new_section_index < 0 {
-            return None;
-        }
-
-        let next = Self {
-            direction: new_direction,
-            road_index: new_road_index,
-            section_index: new_section_index as usize,
-        };
-        Some(next)
-        */
     }
 
-    pub fn take_decision(&self, decision: CarDecision) -> Option<Self> {
+    pub fn take_decision(self, decision: CarDecision) -> Option<Self> {
         match decision {
             CarDecision::GoStraight => self.go_straight(),
             CarDecision::TurnRight => self.turn(true),
@@ -301,7 +330,7 @@ impl RoadSection {
         }
     }
 
-    pub fn possible_decisions(&self) -> Vec<CarDecision> {
+    pub fn possible_decisions(self) -> Vec<CarDecision> {
         let mut possible_decisions = Vec::with_capacity(3);
 
         for decision in [
@@ -309,7 +338,7 @@ impl RoadSection {
             CarDecision::TurnLeft,
             CarDecision::TurnRight,
         ] {
-            if let Some(next) = self.take_decision(decision) {
+            if let Some(_next) = self.take_decision(decision) {
                 possible_decisions.push(decision);
             }
         }
@@ -320,6 +349,38 @@ impl RoadSection {
         }
 
         possible_decisions
+    }
+
+    pub fn decision_to_go_to(self, destination: RoadSection) -> Option<CarDecision> {
+        // I want to go to that other section right there,
+        // what decision do I take to get there?
+        // not pathfinding btw, only works for sections that can be reached in
+        // once decision
+
+        self.possible_decisions()
+            .into_iter()
+            .find(|d| self.take_decision(*d).is_some_and(|s| s == destination))
+    }
+
+    pub fn checkerboard_coords(self) -> (isize, isize) {
+        // if the grid was a checkerboard. no horizontal/vertical coords.
+        // what would the current x and y be
+        // (useful for calculating manhattan distance)
+
+        match self.direction.orientation() {
+            Orientation::Horizontal => (self.section_index, self.road_index),
+            Orientation::Vertical => (self.road_index, self.section_index),
+        }
+    }
+
+    pub fn manhattan_distance(self, other: Self) -> usize {
+        let self_coords = self.checkerboard_coords();
+        let other_coords = other.checkerboard_coords();
+
+        let dx = self_coords.0.abs_diff(other_coords.0);
+        let dy = self_coords.1.abs_diff(other_coords.1);
+
+        dx + dy
     }
 }
 
@@ -364,19 +425,13 @@ pub struct Grid {
     traffic_lights: HashMap<RoadSection, TrafficLight>,
 }
 
-// #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-// pub enum RoadOrientation {
-//     Horizontal,
-//     Vertical,
-// }
-
 impl Grid {
     pub const HORIZONTAL_ROADS: usize = 5;
     pub const VERTICAL_ROADS: usize = 7;
     // pub const HORIZONTAL_ROADS: usize = 2;
     // pub const VERTICAL_ROADS: usize = 3;
-    pub const HORIZONTAL_SECTION_SLOTS: usize = 3;
-    pub const VERTICAL_SECTION_SLOTS: usize = 3;
+    pub const HORIZONTAL_SECTION_SLOTS: usize = 5;
+    pub const VERTICAL_SECTION_SLOTS: usize = 5;
 
     pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 5 * Game::TICKS_PER_SEC;
 
@@ -407,9 +462,10 @@ impl Grid {
         };
 
         // tmp: spawn 3 random cars
-        for _ in 0..70 {
-            let agent = RandomCar {};
-            let car = CarProps::new(agent, 10);
+        for _ in 0..1 {
+            // let agent = RandomTurns {};
+            let agent = RandomDestination::default();
+            let car = CarProps::new(agent, 3);
             this.add_car(car);
         }
 
@@ -512,8 +568,11 @@ impl Grid {
             .map(|car| car.position)
             .collect::<HashSet<_>>();
 
+        // temporarily move cars out of grid
+        let mut cars = std::mem::take(&mut self.cars);
+
         // for (position, car) in old_grid.iter_mut() {
-        for car in &mut self.cars {
+        for car in &mut cars {
             let old_position = car.position;
 
             // by default, the car stays still
@@ -548,7 +607,14 @@ impl Grid {
                 NextCarPosition::OnlyStraight(next) => next,
                 NextCarPosition::MustChoose(possible_decisions) => {
                     // the car must choose where to turn
-                    let decision = car.props.agent.turn(&old_position, &possible_decisions);
+
+                    // temporarily take agent out of car
+                    let null_agent = Box::new(NullAgent {});
+                    let mut agent = std::mem::replace(&mut car.props.agent, null_agent);
+
+                    let decision = agent.turn(self, car);
+
+                    car.props.agent = agent;
                     old_position.take_decision(decision)
                 }
             };
@@ -579,7 +645,7 @@ impl Grid {
         // let mut car = old_grid.remove(&position).unwrap();
 
         // move the cars
-        for car in &mut self.cars {
+        for car in &mut cars {
             let Some(next_position) = cars_to_move.remove(&car.position) else {
                 continue; // car stays still
             };
@@ -604,10 +670,13 @@ impl Grid {
 
                 let car = Car::new(props, position);
                 // self.grid.insert(position, car);
-                self.cars.push(car);
+                cars.push(car);
                 self.taken_positions.insert(position);
             }
         }
+
+        // put cars back
+        self.cars = cars;
 
         // check we didn't lose any cars in the process
         assert_eq!(cars_count + new_cars_count, self.cars.len());
