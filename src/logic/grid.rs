@@ -1,20 +1,13 @@
-use std::{
-    collections::{HashMap, HashSet},
-    time::Instant,
-};
+use std::collections::{HashMap, HashSet};
 
 use rand::Rng;
-
-// use crate::logic::car::CarState;
 
 use crate::{
     logic::car::{NextCarPosition, NullAgent},
     render::render_main::Game,
 };
 
-use super::car::{
-    Car, CarAgent, CarDecision, CarPosition, CarProps, RandomDestination, RandomTurns,
-};
+use super::car::{Car, CarDecision, CarPosition, CarProps, RandomDestination};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Orientation {
@@ -229,11 +222,6 @@ impl RoadSection {
     pub fn random(mut rng: impl Rng) -> Self {
         let direction = Direction::random(&mut rng);
 
-        // Self {
-        //     direction,
-        //     road_index: rng.gen_range(0..=direction.max_road_index()),
-        //     section_index: rng.gen_range(0..=direction.max_section_index()),
-        // }
         let road_index = rng.gen_range(0..=direction.max_road_index());
         let section_index = rng.gen_range(0..=direction.max_section_index());
         Self::get(direction, road_index, section_index)
@@ -355,7 +343,7 @@ impl RoadSection {
         // I want to go to that other section right there,
         // what decision do I take to get there?
         // not pathfinding btw, only works for sections that can be reached in
-        // once decision
+        // one decision
 
         self.possible_decisions()
             .into_iter()
@@ -417,8 +405,6 @@ pub struct Grid {
     cars: Vec<Car>,
     taken_positions: HashSet<CarPosition>,
 
-    last_tick: Instant,
-
     // None position = random spawn point
     cars_to_spawn: Vec<(CarProps, Option<CarPosition>)>,
 
@@ -428,25 +414,12 @@ pub struct Grid {
 impl Grid {
     pub const HORIZONTAL_ROADS: usize = 5;
     pub const VERTICAL_ROADS: usize = 7;
-    // pub const HORIZONTAL_ROADS: usize = 2;
-    // pub const VERTICAL_ROADS: usize = 3;
     pub const HORIZONTAL_SECTION_SLOTS: usize = 5;
     pub const VERTICAL_SECTION_SLOTS: usize = 5;
 
     pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 5 * Game::TICKS_PER_SEC;
 
-    // const MAX_TICK_LENGTH: Duration = Duration::from_millis(100);
-
     pub fn new() -> Self {
-        // let inner = Grid {
-        //     grid: HashMap::new(),
-        //     cars: Vec::new(),
-        //     last_tick: Instant::now(),
-        // };
-        // let this = RefCell::new(inner);
-        // let this = Rc::new(this);
-        // Self(this)
-
         // assign a traffic light to every road
         let traffic_lights = Self::generate_traffic_lights();
 
@@ -455,7 +428,6 @@ impl Grid {
             cars: Vec::new(),
             taken_positions: HashSet::new(),
 
-            last_tick: Instant::now(),
             cars_to_spawn: Vec::new(),
 
             traffic_lights,
@@ -474,7 +446,6 @@ impl Grid {
 
     fn generate_traffic_lights() -> HashMap<RoadSection, TrafficLight> {
         let mut traffic_lights = HashMap::new();
-        // let mut rng = rand::thread_rng();
 
         for section in RoadSection::all() {
             let state = match section.direction.orientation() {
@@ -484,7 +455,6 @@ impl Grid {
             let traffic_light = TrafficLight {
                 toggle_every_ticks: Self::TRAFFIC_LIGHT_TOGGLE_TICKS,
                 state,
-                // ticks_left: rng.gen_range(0..Self::TRAFFIC_LIGHT_TOGGLE_TICKS),
                 ticks_left: Self::TRAFFIC_LIGHT_TOGGLE_TICKS,
             };
             traffic_lights.insert(section, traffic_light);
@@ -494,28 +464,14 @@ impl Grid {
     }
 
     pub fn cars(&self) -> impl Iterator<Item = &Car> {
-        // self.grid.values()
         self.cars.iter()
     }
 
-    // pub fn vertical_roads() -> usize {
-    //     Self::VERTICAL_ROADS
-    // }
-
-    // pub fn horizontal_roads() -> usize {
-    //     Self::HORIZONTAL_ROADS
-    // }
-
     pub fn add_car(&mut self, car: CarProps) {
-        // let car = Car::new(car_agent);
-        // let car = RefCell::new(car);
-        // self.borrow().cars.push(car);
-
         self.cars_to_spawn.push((car, None));
     }
 
     pub fn has_car_at(&self, position: &CarPosition) -> bool {
-        // self.grid.contains_key(position)
         self.taken_positions.contains(position)
     }
 
@@ -550,16 +506,10 @@ impl Grid {
         let cars_count = self.cars.len();
 
         // list of before-and-after positions
-        // let mut cars_to_move = Vec::with_capacity(self.cars.len());
         let mut cars_to_move = HashMap::with_capacity(self.cars.len());
 
         // set of after positions, to see if another car is already moving there
         let mut next_positions = HashSet::with_capacity(self.cars.len());
-
-        // take grid out of self.grid so that we can use self.other stuff
-        // this also resets self.grid to an empty hashmap
-        // let mut old_grid = std::mem::take(&mut self.grid);
-        // let mut old_cars = std::mem::take(&mut self.cars);
 
         // hashmap of positions, to easily check for car presence at coords
         let old_positions = self
@@ -568,10 +518,9 @@ impl Grid {
             .map(|car| car.position)
             .collect::<HashSet<_>>();
 
-        // temporarily move cars out of grid
+        // temporarily move cars out of grid (to have a &mut cars and &self)
         let mut cars = std::mem::take(&mut self.cars);
 
-        // for (position, car) in old_grid.iter_mut() {
         for car in &mut cars {
             let old_position = car.position;
 
@@ -625,7 +574,7 @@ impl Grid {
             }
 
             // if there is a car already there -> don't move there, cause that
-            // car might not move
+            // car might not move (e.g. red light)
             // if there will be a car there next turn -> don't move either
             if old_positions.contains(&next_position) || next_positions.contains(&next_position) {
                 continue;
@@ -640,10 +589,6 @@ impl Grid {
             car.ticks_since_last_movement = 0;
         }
 
-        // put the cars into the new grid
-        // for (position, next_position) in cars_to_move {
-        // let mut car = old_grid.remove(&position).unwrap();
-
         // move the cars
         for car in &mut cars {
             let Some(next_position) = cars_to_move.remove(&car.position) else {
@@ -652,8 +597,6 @@ impl Grid {
             assert_ne!(car.position, next_position);
 
             car.position = next_position;
-            // let previous_car = self.grid.insert(next_position, car);
-            // assert!(previous_car.is_none());
         }
 
         self.taken_positions = next_positions;
@@ -693,312 +636,4 @@ impl Grid {
 
         panic!("Grid is full!")
     }
-
-    /*
-    pub fn tick(&self) {
-
-        // only process max 100ms per tick
-        // let time_since_last_tick = sel.last_tick.elapsed();
-        // let time_since_last_tick = time_since_last_tick.max(Duration::from_millis(100));
-
-        for car in sel.cars.iter() {
-            let car_state = car.borrow().state.clone();
-            let new_state = match car_state {
-                CarState::NotSpawnedYet => sel.find_empty_space(),
-                CarState::Straight {
-                    position,
-                    mut progress,
-                } => 'straight: {
-                    progress += time_since_last_tick.as_secs_f32() * Car::STRAIGHT_SPEED;
-                    if progress < 100. {
-                        break 'straight CarState::Straight { position, progress };
-                    }
-
-                    // the car is at a turn. ask it what it wants to do
-                    let available_actions = self.available_actions(&position);
-                    let decision = car.borrow().agent.turn(&position, &available_actions);
-                    let new_position = self.process_decision(&position, decision);
-
-                    // todo should progress > 200 be handled? in case of lag spike
-                    let overflow = progress - 100.;
-                    let turn_progress = overflow / Car::STRAIGHT_SPEED * Car::TURN_SPEED;
-
-                    CarState::Turning {
-                        from: position,
-                        to: new_position,
-                        progress: turn_progress,
-                    }
-                }
-                CarState::Turning {
-                    from,
-                    to,
-                    mut progress,
-                } => 'turning: {
-                    progress += time_since_last_tick.as_secs_f32() * Car::TURN_SPEED;
-                    if progress < 100. {
-                        break 'turning CarState::Turning { from, to, progress };
-                    }
-
-                    let overflow = progress - 100.;
-                    let straight_progress = overflow / Car::TURN_SPEED * Car::STRAIGHT_SPEED;
-
-                    CarState::Straight {
-                        position: to,
-                        progress: straight_progress,
-                    }
-                }
-            };
-
-            if let CarState::Straight { position, progress } = &new_state {
-                let a = sel.grid.entry(position.clone()).or_insert_with(Vec::new);
-            }
-
-            car.borrow_mut().state = new_state;
-        }
-    }
-
-    fn available_actions(&self, position: &CarPosition) -> Vec<CarDecision> {
-        let mut available_actions = Vec::with_capacity(3);
-
-        match position.orientation() {
-            CarOrientation::Right => {
-                if position.next_parallel_road.index < Self::VERTICAL_ROADS - 1 {
-                    available_actions.push(CarDecision::GoStraight);
-                }
-                if position.current_road.index > 0 {
-                    available_actions.push(CarDecision::TurnLeft);
-                }
-                if position.current_road.index < Self::HORIZONTAL_ROADS - 1 {
-                    available_actions.push(CarDecision::TurnRight);
-                }
-            }
-            CarOrientation::Left => {
-                if position.next_parallel_road.index > 0 {
-                    available_actions.push(CarDecision::GoStraight);
-                }
-                if position.current_road.index > 0 {
-                    available_actions.push(CarDecision::TurnRight);
-                }
-                if position.current_road.index < Self::HORIZONTAL_ROADS - 1 {
-                    available_actions.push(CarDecision::TurnLeft);
-                }
-            }
-            CarOrientation::Down => {
-                if position.next_parallel_road.index < Self::HORIZONTAL_ROADS - 1 {
-                    available_actions.push(CarDecision::GoStraight);
-                }
-                if position.current_road.index > 0 {
-                    available_actions.push(CarDecision::TurnRight);
-                }
-                if position.current_road.index < Self::VERTICAL_ROADS - 1 {
-                    available_actions.push(CarDecision::TurnLeft);
-                }
-            }
-            CarOrientation::Up => {
-                if position.next_parallel_road.index > 0 {
-                    available_actions.push(CarDecision::GoStraight);
-                }
-                if position.current_road.index > 0 {
-                    available_actions.push(CarDecision::TurnLeft);
-                }
-                if position.current_road.index < Self::VERTICAL_ROADS - 1 {
-                    available_actions.push(CarDecision::TurnRight);
-                }
-            }
-        }
-
-        available_actions
-    }
-
-    fn create_road_id<T: Into<RoadOrientation>>(&self, index: isize, orientation: T) -> RoadId {
-        assert!(index < 0, "Car tried to crash into the edge!");
-        RoadId::new(index as usize, orientation.into())
-    }
-
-    fn next_road_id(&self, current_road: &RoadId, direction: CarOrientation) -> RoadId {
-        if current_road.orientation != direction.into() {
-            panic!("Invalid direction for road orientation!")
-        }
-
-        let new_road_index_offset = match direction {
-            CarOrientation::Right | CarOrientation::Down => 1,
-            CarOrientation::Left | CarOrientation::Up => -1,
-        };
-        self.create_road_id(
-            current_road.index as isize + new_road_index_offset,
-            direction,
-        )
-    }
-
-    fn process_decision(&self, position: &CarPosition, decision: CarDecision) -> CarPosition {
-        match decision {
-            CarDecision::GoStraight => {
-                let next_road =
-                    self.next_road_id(&position.next_parallel_road, position.orientation());
-
-                CarPosition {
-                    current_road: position.current_road.clone(),
-                    prev_parallel_road: position.next_parallel_road.clone(),
-                    next_parallel_road: next_road,
-                }
-            }
-            CarDecision::TurnLeft | CarDecision::TurnRight => {
-                let new_car_orientation = position.orientation().apply_decision(decision);
-
-                let current_road = position.next_parallel_road.clone();
-                let prev_parallel_road = position.current_road.clone();
-                let next_parallel_road =
-                    self.next_road_id(&prev_parallel_road, new_car_orientation);
-
-                CarPosition {
-                    current_road,
-                    prev_parallel_road,
-                    next_parallel_road,
-                }
-            }
-        }
-    }
-    */
 }
-
-/*
-impl Grid {
-    fn find_empty_space(&self) -> CarState {
-        let mut rng = rand::thread_rng();
-
-        // todo: return NotSpawnedYet if unable to find a spot?
-
-        // todo: instead of doing 1000 random tries, take vec of 0..vertical_roads
-        // and shuffle it, do same for horizontal roads, and go through the roads in
-        // that order
-        for _ in 0..1000 {
-            // pick a random road
-            let (orientation, other_orientation, road_index, section_index) =
-                match rng.gen_bool(0.5) {
-                    true => (
-                        RoadOrientation::Horizontal,
-                        RoadOrientation::Vertical,
-                        rng.gen_range(0..Grid::HORIZONTAL_ROADS),
-                        rng.gen_range(0..Grid::VERTICAL_ROADS - 1),
-                    ),
-                    false => (
-                        RoadOrientation::Vertical,
-                        RoadOrientation::Horizontal,
-                        rng.gen_range(0..Grid::VERTICAL_ROADS),
-                        rng.gen_range(0..Grid::HORIZONTAL_ROADS - 1),
-                    ),
-                };
-            let road_id = RoadId {
-                orientation,
-                index: road_index,
-            };
-
-            // pick a random direction
-            let mut prev_parallel_road = RoadId {
-                orientation: other_orientation,
-                index: section_index,
-            };
-            let mut next_parallel_road = RoadId {
-                orientation: other_orientation,
-                index: section_index + 1,
-            };
-            if rng.gen::<bool>() {
-                (prev_parallel_road, next_parallel_road) = (next_parallel_road, prev_parallel_road);
-            }
-
-            // we have our road section
-            let car_position = CarPosition {
-                current_road: road_id,
-                next_parallel_road,
-                prev_parallel_road,
-            };
-
-            // pick a part of the road with no other cars
-            let cars_on_this_section = &self.grid[&car_position];
-            let margin_between_cars = Car::STRAIGHT_SPEED * Grid::MAX_TICK_LENGTH.as_secs_f32();
-
-            let mut available_ranges = vec![0.0f32..1.0];
-            for other_car in cars_on_this_section {
-                let other_car = other_car.borrow();
-                let CarState::Straight {
-                    position: _,
-                    progress,
-                } = &other_car.state
-                else {
-                    continue;
-                };
-
-                let unavailable_range =
-                    progress - margin_between_cars..progress + margin_between_cars;
-
-                // substract unavailable_range from available_ranges
-                let mut new_available_ranges = Vec::new();
-                for available_range in available_ranges {
-                    if unavailable_range.start > available_range.end
-                        || unavailable_range.end < available_range.start
-                    {
-                        continue; // these ranges don't intersect
-                    }
-
-                    if available_range.start > unavailable_range.start
-                        && available_range.end < unavailable_range.end
-                    {
-                        continue; // the unavailable range completely covers the available one
-                    }
-
-                    if available_range.start < unavailable_range.start
-                        && available_range.end > unavailable_range.end
-                    {
-                        // unavailable is entirely self=contained by available,
-                        // split available in two
-                        new_available_ranges.push(available_range.start..unavailable_range.end);
-                        new_available_ranges.push(unavailable_range.end..available_range.end);
-                        continue;
-                    }
-
-                    if unavailable_range.start < available_range.start
-                        && available_range.contains(&unavailable_range.end)
-                    {
-                        // unavailable straddles the beginning of available
-                        new_available_ranges.push(unavailable_range.end..available_range.end);
-                        continue;
-                    }
-
-                    if available_range.contains(&unavailable_range.start)
-                        && unavailable_range.end > available_range.end
-                    {
-                        // unavailable straddles the end of available
-                        new_available_ranges.push(available_range.start..unavailable_range.start);
-                        continue;
-                    }
-
-                    panic!("None of the range conditions matched!");
-                }
-
-                available_ranges = new_available_ranges;
-            }
-
-            if available_ranges.iter().any(|range| range.is_empty()) {
-                panic!("Empty range in available_ranges");
-            }
-
-            if available_ranges.is_empty() {
-                continue; // road section is full
-            }
-
-            let chosen_range = available_ranges
-                .choose_weighted(&mut rng, |range| range.end - range.start)
-                .expect("Error choosing a range from the list")
-                .clone();
-
-            let progress = rng.gen_range(chosen_range);
-            return CarState::Straight {
-                position: car_position,
-                progress,
-            };
-        }
-
-        panic!("No place found for the new car after 1000 iterations");
-    }
-}
-*/

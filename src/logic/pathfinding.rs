@@ -29,7 +29,6 @@ impl Path {
                 .into_iter()
                 .map(move |d| section.take_decision(d).unwrap())
                 .map(|s| (s, 1))
-                // .collect()
         };
         let reached_goal = |section: &RoadSection| -> bool { section == &last };
 

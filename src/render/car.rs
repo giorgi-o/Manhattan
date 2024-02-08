@@ -112,16 +112,6 @@ impl<'g> CarRenderer<'g> {
         let section_rect =
             road.section_rect_on_side(position.road_section.section_index, direction);
 
-        // tmp: draw rectangle over current section
-        // draw_rectangle(
-        //     section_rect.x,
-        //     section_rect.y,
-        //     section_rect.w,
-        //     section_rect.h,
-        //     BLUE,
-        // );
-        // println!("drawing section: {:?}", position.road_section);
-
         // start with section rect as base
         let mut car_rect = section_rect;
 
@@ -147,15 +137,6 @@ impl<'g> CarRenderer<'g> {
             car_rect.y += distance_from_section_start.v;
         }
 
-        // adjust side of the road
-        // if self.on_positive_side_of_road() {
-        //     if orientation == Orientation::Horizontal {
-        //         car_rect.y += RoadRenderer::WIDTH / 2.0;
-        //     } else {
-        //         car_rect.x += RoadRenderer::WIDTH / 2.0;
-        //     }
-        // }
-
         car_rect
     }
 
@@ -177,7 +158,6 @@ impl<'g> CarRenderer<'g> {
                 None => PathLineBound::Car(path.destination),
             };
 
-            // self.render_path_line(*path_section, start, end);
             self.render_path_line(start, end);
 
             start = end;
@@ -192,145 +172,15 @@ impl<'g> CarRenderer<'g> {
         line.draw(Self::PATH_COLOUR);
     }
 
-    /*fn render_path_line(&self, current: RoadSection, start: PathLineBound, end: PathLineBound) {
-        println!("rendering path line: {:?} -> {:?}", start, end);
-
-        let road = self.road();
-        let section_rect = road.section_rect_on_side(current.section_index, current.direction);
-        let orientation = road.orientation;
-
-        let section_line = Line::through_rect_middle(section_rect, orientation);
-        let mut path_line = Line::new(0.0, 0.0, 0.0, 0.0);
-
-        match start {
-            PathLineBound::SectionsIntersection((s1, s2)) => {
-                let other_section_rect = road.section_rect_on_side(s.section_index, s.direction);
-                let other_section_line =
-                    Line::through_rect_middle(other_section_rect, s.direction.orientation());
-                match section_line.intersection(other_section_line) {
-                    Some((x, y)) => {
-                        path_line.x1 = x;
-                        path_line.y1 = y;
-                    }
-                    None => {
-                        let section_center = section_rect.center();
-                        let other_section_start =
-                            Vec2::new(other_section_line.x1, other_section_line.y1);
-                        let other_section_end =
-                            Vec2::new(other_section_line.x2, other_section_line.y2);
-                        let closest_point = if section_center.distance_squared(other_section_start)
-                            < section_center.distance_squared(other_section_end)
-                        {
-                            other_section_start
-                        } else {
-                            other_section_end
-                        };
-
-                        path_line.x1 = closest_point.x;
-                        path_line.y1 = closest_point.y;
-                    }
-                }
-            }
-            PathLineBound::Car(c) => {
-                assert_eq!(c, self.car.position); // to make things simpler for now
-                let car_rect = self.rect();
-                let line_through_car = Line::through_rect_middle(car_rect, orientation);
-                let (x, y) = match self.car.position.road_section.direction.towards_positive() {
-                    false => (line_through_car.x1, line_through_car.y1),
-                    true => (line_through_car.x2, line_through_car.y2),
-                };
-                path_line.x1 = x;
-                path_line.y1 = y;
-            }
-        }
-
-        match end {
-            PathLineBound::Section(s) => {
-                let other_section_rect = road.section_rect_on_side(s.section_index, s.direction);
-                let other_section_line =
-                    Line::through_rect_middle(other_section_rect, s.direction.orientation());
-                match section_line.intersection(other_section_line) {
-                    Some((x, y)) => {
-                        path_line.x2 = x;
-                        path_line.y2 = y;
-                    }
-                    None => {
-                        let section_center = section_rect.center();
-                        let other_section_start =
-                            Vec2::new(other_section_line.x1, other_section_line.y1);
-                        let other_section_end =
-                            Vec2::new(other_section_line.x2, other_section_line.y2);
-                        let closest_point = if section_center.distance_squared(other_section_start)
-                            < section_center.distance_squared(other_section_end)
-                        {
-                            other_section_start
-                        } else {
-                            other_section_end
-                        };
-
-                        path_line.x2 = closest_point.x;
-                        path_line.y2 = closest_point.y;
-                    }
-                }
-            }
-            PathLineBound::Car(c) => {
-                let mut position_in_section = c.position_in_section;
-                let direction = c.road_section.direction;
-                let towards_positive = direction.towards_positive();
-                if !towards_positive {
-                    position_in_section = direction.max_position_in_section() - position_in_section;
-                }
-
-                let section_rect =
-                    road.section_rect_on_side(c.road_section.section_index, direction);
-                match orientation {
-                    Orientation::Horizontal => {
-                        path_line.y2 = section_rect.top() + section_rect.h / 2.0;
-                        path_line.x1 = section_rect.left()
-                            + Self::car_length() / 2.0
-                            + (position_in_section as f32 * Self::car_length());
-                    }
-                    Orientation::Vertical => {
-                        path_line.x2 = section_rect.left() + section_rect.w / 2.0;
-                        path_line.y1 = section_rect.top()
-                            + Self::car_length() / 2.0
-                            + (position_in_section as f32 * Self::car_length());
-                    }
-                }
-            }
-        }
-
-        path_line.draw(Self::PATH_COLOUR);
-    }*/
-
     fn road(&self) -> RoadRenderer<'g> {
         let road_section = self.car.position.road_section;
-
-        // self.road_renderers
-        //     .iter()
-        //     .find(|r| {
-        //         r.orientation == road_section.direction.orientation()
-        //             && r.index == road_section.road_index
-        //     })
-        //     .unwrap()
         self.grid_renderer.road_at(road_section)
     }
 
     fn get_line_xy(&self, line_bound: PathLineBound, start: bool) -> (f32, f32) {
         match line_bound {
             PathLineBound::Car(car_pos) => {
-                // let road = self.road();
                 let road = self.grid_renderer.road_at(car_pos.road_section);
-
-                // let mut position_in_section = car_pos.position_in_section;
-                // let direction = car_pos.road_section.direction;
-                // let towards_positive = direction.towards_positive();
-                // if !towards_positive {
-                //     position_in_section = direction.max_position_in_section() - position_in_section;
-                // }
-
-                // let section_rect =
-                //     road.section_rect_on_side(car_pos.road_section.section_index, direction);
 
                 let car_rect = Self::rect_from_position(car_pos, &road);
                 let line_through_car = Line::through_rect_middle(car_rect, road.orientation);
