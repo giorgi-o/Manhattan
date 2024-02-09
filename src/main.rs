@@ -12,7 +12,6 @@ mod render {
     pub mod util;
     pub mod grid;
     pub mod car;
-    pub mod coords;
 }
 
 fn main() {

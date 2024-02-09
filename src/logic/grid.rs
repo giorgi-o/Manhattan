@@ -7,7 +7,7 @@ use crate::{
     render::render_main::Game,
 };
 
-use super::car::{Car, CarDecision, CarPosition, CarProps, RandomDestination};
+use super::{car::{Car, CarDecision, CarPosition, CarProps, RandomDestination}, passenger::Passenger};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Orientation {
@@ -401,9 +401,10 @@ pub struct TrafficLight {
 }
 
 pub struct Grid {
-    // grid: HashMap<CarPosition, Car>,
     cars: Vec<Car>,
     taken_positions: HashSet<CarPosition>,
+
+    waiting_passengers: Vec<Passenger>,
 
     // None position = random spawn point
     cars_to_spawn: Vec<(CarProps, Option<CarPosition>)>,
@@ -417,7 +418,10 @@ impl Grid {
     pub const HORIZONTAL_SECTION_SLOTS: usize = 5;
     pub const VERTICAL_SECTION_SLOTS: usize = 5;
 
-    pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 5 * Game::TICKS_PER_SEC;
+    pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 3 * Game::TICKS_PER_SEC;
+
+    pub const MAX_TOTAL_PASSENGERS: usize = Self::HORIZONTAL_ROADS * Self::VERTICAL_ROADS;
+    pub const MAX_WAITING_PASSENGERS: usize = Self::MAX_TOTAL_PASSENGERS / 2;
 
     pub fn new() -> Self {
         // assign a traffic light to every road
@@ -428,12 +432,14 @@ impl Grid {
             cars: Vec::new(),
             taken_positions: HashSet::new(),
 
+            waiting_passengers: Vec::with_capacity(Self::MAX_WAITING_PASSENGERS),
+
             cars_to_spawn: Vec::new(),
 
             traffic_lights,
         };
 
-        // tmp: spawn 3 random cars
+        // tmp: spawn X random cars
         for _ in 0..1 {
             // let agent = RandomTurns {};
             let agent = RandomDestination::default();
