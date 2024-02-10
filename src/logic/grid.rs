@@ -7,7 +7,12 @@ use crate::{
     render::render_main::Game,
 };
 
-use super::{car::{Car, CarDecision, CarPosition, CarProps, RandomDestination}, passenger::Passenger};
+use super::{
+    car::{
+        Car, CarDecision, CarPassenger, CarPosition, CarProps, NearestPassenger, RandomDestination,
+    },
+    passenger::{Passenger, PassengerId},
+};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Orientation {
@@ -404,7 +409,7 @@ pub struct Grid {
     cars: Vec<Car>,
     taken_positions: HashSet<CarPosition>,
 
-    waiting_passengers: Vec<Passenger>,
+    waiting_passengers: HashMap<PassengerId, Passenger>,
 
     // None position = random spawn point
     cars_to_spawn: Vec<(CarProps, Option<CarPosition>)>,
@@ -432,7 +437,7 @@ impl Grid {
             cars: Vec::new(),
             taken_positions: HashSet::new(),
 
-            waiting_passengers: Vec::with_capacity(Self::MAX_WAITING_PASSENGERS),
+            waiting_passengers: HashMap::with_capacity(Self::MAX_WAITING_PASSENGERS),
 
             cars_to_spawn: Vec::new(),
 
@@ -442,7 +447,8 @@ impl Grid {
         // tmp: spawn X random cars
         for _ in 0..1 {
             // let agent = RandomTurns {};
-            let agent = RandomDestination::default();
+            // let agent = RandomDestination::default();
+            let agent = NearestPassenger::default();
             let car = CarProps::new(agent, 3);
             this.add_car(car);
         }
@@ -488,6 +494,7 @@ impl Grid {
     pub fn tick(&mut self) {
         self.tick_traffic_lights();
         self.tick_cars();
+        self.tick_passengers();
     }
 
     fn tick_traffic_lights(&mut self) {
@@ -632,6 +639,59 @@ impl Grid {
         assert_eq!(self.taken_positions.len(), self.cars.len());
     }
 
+    fn tick_passengers(&mut self) {
+        // spawn passengers if we need to
+        let waiting_passengers = self.waiting_passengers.len();
+        let riding_passengers = self
+            .cars
+            .iter()
+            .filter(|c| c.passenger.is_dropping_off())
+            .count();
+        let total_passengers = waiting_passengers + riding_passengers;
+
+        let passengers_to_spawn = Self::MAX_WAITING_PASSENGERS
+            - waiting_passengers.min(Self::MAX_TOTAL_PASSENGERS - total_passengers);
+
+        if passengers_to_spawn > 0 {
+            // println!("spawning {passengers_to_spawn} passengers");
+            let mut rng = rand::thread_rng();
+
+            for _ in 0..passengers_to_spawn {
+                let passenger = Passenger::random(&mut rng);
+                self.waiting_passengers.insert(passenger.id, passenger);
+            }
+        }
+
+        // make cars pick up passengers
+        for car in &mut self.cars {
+            let CarPassenger::PickingUp(passenger_id) = &car.passenger else {
+                continue;
+            };
+            let passenger = self
+                .waiting_passengers
+                .get(passenger_id)
+                .expect("Car is picking up passenger that doesn't exist");
+
+            if car.position == passenger.start {
+                // car is next to passenger, make them enter the car
+                let passenger = self.waiting_passengers.remove(passenger_id).unwrap();
+                car.passenger = CarPassenger::DroppingOff(passenger);
+            }
+        }
+
+        // make cars drop off passengers
+        for car in &mut self.cars {
+            let CarPassenger::DroppingOff(passenger) = &car.passenger else {
+                continue;
+            };
+
+            if passenger.destination == car.position {
+                // car reached dropoff destination
+                car.passenger = CarPassenger::None;
+            }
+        }
+    }
+
     fn random_empty_car_position(&self, mut rng: impl Rng) -> CarPosition {
         for _ in 0..1000 {
             let position = CarPosition::random(&mut rng);
@@ -641,5 +701,28 @@ impl Grid {
         }
 
         panic!("Grid is full!")
+    }
+
+    pub fn waiting_passengers(&self) -> impl Iterator<Item = &Passenger> {
+        self.waiting_passengers.values()
+    }
+
+    pub fn unassigned_passengers(&self) -> Vec<&Passenger> {
+        self.waiting_passengers
+            .values()
+            .filter(|p| !p.car_on_its_way)
+            .collect()
+    }
+
+    pub fn assign_car_to_passenger(&mut self, car: &mut Car, passenger: PassengerId) {
+        let passenger = self
+            .waiting_passengers
+            .get(&passenger)
+            .expect("Car tried to assign to non-existent passenger");
+        car.passenger = CarPassenger::PickingUp(passenger.id);
+    }
+
+    pub fn get_passenger(&self, passenger: PassengerId) -> Option<&Passenger> {
+        self.waiting_passengers.get(&passenger)
     }
 }

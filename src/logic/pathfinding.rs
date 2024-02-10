@@ -45,7 +45,7 @@ impl Path {
         // returns None if we already arrived
         let current_section = self.sections.pop_front().unwrap();
         let next_section = self.sections.front()?;
-        let decision = current_section.decision_to_go_to(next_section).unwrap();
+        let decision = current_section.decision_to_go_to(*next_section).unwrap();
         Some(decision)
     }
 }

@@ -3,6 +3,7 @@ use rand::{seq::SliceRandom, Rng};
 
 use super::{
     grid::{Grid, RoadSection},
+    passenger::{Passenger, PassengerId},
     pathfinding::Path,
 };
 
@@ -81,8 +82,28 @@ impl CarProps {
         //     a: 1.0,
         // }
 
-        const POSSIBLE_COLOURS: &[Color] = &[BLUE, RED, ORANGE];
+        const POSSIBLE_COLOURS: &[Color] = &[BLUE, RED, PURPLE];
         *POSSIBLE_COLOURS.choose(&mut rng).unwrap()
+    }
+}
+
+pub enum CarPassenger {
+    None,
+    PickingUp(PassengerId),
+    DroppingOff(Passenger),
+}
+
+impl CarPassenger {
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    pub fn is_picking_up(&self) -> bool {
+        matches!(self, Self::PickingUp(_))
+    }
+
+    pub fn is_dropping_off(&self) -> bool {
+        matches!(self, Self::DroppingOff(_))
     }
 }
 
@@ -92,6 +113,7 @@ pub struct Car {
     // variable data
     pub position: CarPosition,
     pub ticks_since_last_movement: usize,
+    pub passenger: CarPassenger,
 }
 
 impl Car {
@@ -112,6 +134,7 @@ impl Car {
             props,
             position,
             ticks_since_last_movement: 0,
+            passenger: CarPassenger::None,
         }
     }
 }
@@ -124,7 +147,7 @@ pub enum CarDecision {
 }
 
 pub trait CarAgent {
-    fn turn(&mut self, grid: &Grid, car: &Car) -> CarDecision;
+    fn turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision;
     fn path(&self) -> Option<&Path> {
         None
     }
@@ -134,7 +157,7 @@ pub trait CarAgent {
 pub struct NullAgent {}
 
 impl CarAgent for NullAgent {
-    fn turn(&mut self, _grid: &Grid, _car: &Car) -> CarDecision {
+    fn turn(&mut self, _grid: &mut Grid, _car: &mut Car) -> CarDecision {
         unreachable!()
     }
 }
@@ -142,7 +165,7 @@ impl CarAgent for NullAgent {
 pub struct RandomTurns {}
 
 impl CarAgent for RandomTurns {
-    fn turn(&mut self, _grid: &Grid, car: &Car) -> CarDecision {
+    fn turn(&mut self, _grid: &mut Grid, car: &mut Car) -> CarDecision {
         // *options
         //     .choose(&mut rand::thread_rng())
         //     .expect("List of possible car decisions is empty")
@@ -159,7 +182,7 @@ pub struct RandomDestination {
 }
 
 impl CarAgent for RandomDestination {
-    fn turn(&mut self, _grid: &Grid, car: &Car) -> CarDecision {
+    fn turn(&mut self, _grid: &mut Grid, car: &mut Car) -> CarDecision {
         if self.path.is_none() {
             let destination = CarPosition::random(&mut rand::thread_rng());
             let path = Path::find(car.position, destination);
@@ -172,6 +195,67 @@ impl CarAgent for RandomDestination {
             self.path = None;
             self.turn(_grid, car)
         })
+    }
+
+    fn path(&self) -> Option<&Path> {
+        self.path.as_ref()
+    }
+}
+
+#[derive(Default)]
+pub struct NearestPassenger {
+    path: Option<Path>,
+}
+
+impl NearestPassenger {
+    pub fn pick_passenger<'g>(&self, grid: &'g Grid, car: &Car) -> Option<&'g Passenger> {
+        let waiting_passengers = grid.unassigned_passengers();
+        if waiting_passengers.is_empty() {
+            // no passengers waiting to be picked up
+            return None;
+        }
+
+        // find closest one
+        // todo: use a* path cost instead of manhattan distance
+        let closest_passenger = waiting_passengers
+            .into_iter()
+            .min_by_key(|p| {
+                p.start
+                    .road_section
+                    .manhattan_distance(car.position.road_section)
+            })
+            .unwrap();
+        Some(closest_passenger)
+    }
+}
+
+impl CarAgent for NearestPassenger {
+    fn turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision {
+        let mut path = match &car.passenger {
+            CarPassenger::None => {
+                // assign ourselves to the closest passenger
+                let closest_passenger = self.pick_passenger(grid, car);
+                let Some(closest_passenger) = closest_passenger else {
+                    return RandomTurns {}.turn(grid, car);
+                };
+                let closest_passenger_position = closest_passenger.start;
+
+                grid.assign_car_to_passenger(car, closest_passenger.id);
+
+                Path::find(car.position, closest_passenger_position)
+            }
+
+            CarPassenger::PickingUp(passenger_id) => {
+                let passenger = grid.get_passenger(*passenger_id).unwrap();
+                Path::find(car.position, passenger.start)
+            }
+
+            CarPassenger::DroppingOff(passenger) => Path::find(car.position, passenger.destination),
+        };
+
+        let decision = path.pop_next_decision().unwrap();
+        self.path = Some(path);
+        decision
     }
 
     fn path(&self) -> Option<&Path> {

@@ -4,6 +4,7 @@ use crate::logic::grid::{Direction, Grid, LightState, Orientation, RoadSection};
 
 use super::{
     car::CarRenderer,
+    passenger::PassengerRenderer,
     util::{Lengths, ToLengths},
 };
 
@@ -25,13 +26,17 @@ impl<'g> GridRenderer<'g> {
         self.render_intersections();
         self.draw_grid_outline();
 
+        let traffic_lights_renderer = TrafficLightsRenderer::new(self);
+        traffic_lights_renderer.render_all();
+
         for car in self.grid.cars() {
             let car_renderer = CarRenderer::new(car, self);
             car_renderer.render();
         }
 
-        let traffic_lights_renderer = TrafficLightsRenderer::new(self);
-        traffic_lights_renderer.render_all();
+        for passenger in self.grid.waiting_passengers() {
+            PassengerRenderer::render_waiting(self, passenger);
+        }
     }
 
     fn roads(grid: &'g Grid) -> Vec<RoadRenderer> {

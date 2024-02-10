@@ -16,8 +16,8 @@ pub struct CarRenderer<'g> {
 }
 
 impl<'g> CarRenderer<'g> {
-    const ROAD_EDGE_MARGIN: f32 = 1.0;
-    const BETWEEN_CARS_MARGIN: f32 = 1.0;
+    pub const ROAD_EDGE_MARGIN: f32 = 1.0;
+    pub const BETWEEN_CARS_MARGIN: f32 = 1.0;
 
     // whether we drive on the left side of the road
     pub const ENGLAND_MODE: bool = true; // this should really be somewhere else...
@@ -97,7 +97,7 @@ impl<'g> CarRenderer<'g> {
         Self::rect_from_position(self.car.position, &self.road())
     }
 
-    fn rect_from_position(position: CarPosition, road: &RoadRenderer) -> Rect {
+    pub fn rect_from_position(position: CarPosition, road: &RoadRenderer) -> Rect {
         let orientation = road.orientation;
 
         let mut section_position = position.position_in_section;
