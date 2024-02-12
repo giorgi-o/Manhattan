@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use macroquad::color::{Color, ORANGE};
 use rand::Rng;
 
 use super::car::CarPosition;
@@ -20,6 +21,7 @@ pub struct Passenger {
     pub start: CarPosition,
     pub destination: CarPosition,
     pub car_on_its_way: bool,
+    pub colour: Color,
 }
 
 impl Passenger {
@@ -29,6 +31,7 @@ impl Passenger {
             start: CarPosition::random(&mut rng),
             destination: CarPosition::random(rng),
             car_on_its_way: false,
+            colour: ORANGE,
         }
     }
 }

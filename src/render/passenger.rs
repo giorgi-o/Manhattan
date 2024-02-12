@@ -1,9 +1,6 @@
 use macroquad::prelude::*;
 
-use crate::logic::{
-    grid::{Grid, Orientation},
-    passenger::Passenger,
-};
+use crate::logic::{grid::Orientation, passenger::Passenger};
 
 use super::{
     car::CarRenderer,
@@ -20,8 +17,6 @@ pub struct PassengerRenderer {
 impl PassengerRenderer {
     const DISTANCE_FROM_ROAD: f32 = 10.0;
     const RADIUS: f32 = 5.0;
-
-    const COLOUR: Color = ORANGE;
 
     pub fn render_waiting(grid: &GridRenderer, passenger: &Passenger) {
         let position = passenger.start;
@@ -57,6 +52,6 @@ impl PassengerRenderer {
             }
         };
 
-        draw_circle(cx, cy, Self::RADIUS, Self::COLOUR);
+        draw_circle(cx, cy, Self::RADIUS, passenger.colour);
     }
 }

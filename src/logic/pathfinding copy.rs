@@ -1,0 +1,250 @@
+use std::{cell::RefCell, collections::VecDeque, hash::Hash, ops::Deref};
+
+use pathfinding::directed::astar::astar;
+
+use super::{
+    car::{Car, CarDecision, CarPosition},
+    grid::{Grid, LightState, RoadSection},
+};
+
+#[derive(Clone, Debug)]
+pub struct Path {
+    // first element is current section
+    // last element is destination
+    pub sections: VecDeque<RoadSection>,
+
+    // need to store car position in section as well
+    pub destination: CarPosition,
+}
+
+impl Path {
+    pub fn find<'g>(car: &'g Car, destination: CarPosition, grid: &'g Grid) -> Self {
+        let mut graph = Graph {
+            grid,
+            car,
+            destination,
+            // nodes: RefCell::default(),
+            nodes: vec![],
+        };
+
+        let start = graph.start_node_index();
+
+        // let node = |index: NodeIndex| &graph.nodes[index];
+
+        let heuristic = |i: &NodeIndex| -> usize {
+            graph.nodes[*i]
+                .section()
+                .manhattan_distance(destination.road_section)
+        };
+        let successors = |i: &NodeIndex| {
+            // let node = node(*i);
+            let node = &graph.nodes[*i];
+            let successors = graph.successors(node);
+            // drop(node);
+            successors
+
+            // successors
+            //     .into_iter()
+            //     .map(|(n, c)| {
+            //         let i = graph.add_node(n);
+            //         (i, c)
+            //     })
+            //     .collect::<Vec<_>>()
+
+            // todo!()
+        };
+        let reached_goal = |i: &NodeIndex| -> bool { graph.nodes[*i].is_end_node(destination) };
+
+        let (sections, _cost) =
+            astar(&start, successors, heuristic, reached_goal).expect("No path to destination");
+
+        let sections = sections.into_iter().map(|i| graph.nodes[i].section()).collect();
+        Self {
+            sections,
+            destination,
+        }
+    }
+
+    pub fn pop_next_decision(&mut self) -> Option<CarDecision> {
+        // returns None if we already arrived
+        let current_section = self.sections.pop_front().unwrap();
+        let next_section = self.sections.front()?;
+        let decision = current_section.decision_to_go_to(*next_section).unwrap();
+        Some(decision)
+    }
+
+    pub fn next_decision(&self) -> Option<CarDecision> {
+        let current_section = self.sections.front()?;
+        let next_section = self.sections.get(1)?;
+        current_section.decision_to_go_to(*next_section)
+    }
+}
+
+/* Compiler error if node.successors() returns a non-static object:
+
+note: due to current limitations in the borrow checker, this implies a `'static` lifetime
+  --> C:\Users\giorg\.cargo\registry\src\index.crates.io-6f17d22bba15001f\pathfinding-4.8.2\src\directed\astar.rs:91:9
+   |
+91 |     FN: FnMut(&N) -> IN,
+   |         ^^^^^^^^^^^^^^^
+
+so to workaround this, we store all the successors in a vec<> in the graph, and
+return the index of the node instead of the node in node.successors().
+*/
+
+type NodeIndex = usize;
+
+struct Graph<'g> {
+    grid: &'g Grid,
+    car: &'g Car,
+    destination: CarPosition,
+    // nodes: RefCell<Vec<Node>>,
+    nodes: Vec<Node>,
+}
+
+impl<'g> Graph<'g> {
+    fn start_node_index(&'g mut self) -> NodeIndex {
+        let start_node = Node {
+            car_pos: self.car.position,
+
+            ticks_after_start: 0,
+            ticks_after_parent: 0,
+        };
+
+        self.add_node(start_node)
+    }
+
+    fn successors(&'g mut self, node: &Node) -> Vec<(NodeIndex, usize)> {
+        // fn successors(&'g self) -> impl Iterator<Item = (Node, usize)> {
+        let possible_decisions = node.section().possible_decisions();
+
+        let roads = possible_decisions
+            .into_iter()
+            .map(|d| node.section().take_decision(d).unwrap());
+        let car_positions = roads.map(|r| CarPosition {
+            road_section: r,
+            position_in_section: 0,
+        });
+        let nodes = car_positions.map(|p| {
+            let ticks_after_parent = self.ticks_to(node, p);
+            Node {
+                car_pos: p,
+                ticks_after_parent,
+                ticks_after_start: node.ticks_after_start + ticks_after_parent,
+            }
+        });
+        let nodes_and_cost = nodes.map(|n| {
+            let move_cost = n.ticks_after_parent;
+            let node_index = self.add_node(n);
+            (node_index, move_cost)
+            // (n, move_cost)
+        });
+
+        let mut successors = Vec::with_capacity(3);
+        successors.extend(nodes_and_cost);
+        successors
+        // nodes_and_cost
+    }
+
+    // the cost to go here from here to a successor
+    fn ticks_to(&'g self, node: &Node, to: CarPosition) -> usize {
+        // count the ticks of:
+        // 1. the car reaching the end of the section
+        // 2. the traffic light turning green
+        // 3. the car reaching the position in the next section
+
+        // 1.
+        let distance_from_road_end =
+            node.section().direction.max_position_in_section() - node.car_pos.position_in_section;
+        let car_speed = self.car.props.speed; // ticks per movement
+        let time_to_road_end = distance_from_road_end * car_speed;
+
+        // 2.
+        let traffic_light = self.grid.traffic_light_at(&node.section());
+        let traffic_light = traffic_light.time_travel(node.ticks_after_start + time_to_road_end);
+        let traffic_light_wait_time = if traffic_light.state == LightState::Green {
+            0
+        } else {
+            traffic_light.ticks_left
+        };
+        // 3.
+        let distance_from_road_start = to.position_in_section;
+        let time_from_road_start = distance_from_road_start * car_speed;
+
+        time_to_road_end + traffic_light_wait_time + time_from_road_start
+    }
+
+    // fn add_node(&self, node: Node) -> NodeIndex {
+    //     let mut nodes = self.nodes.borrow_mut();
+    //     nodes.push(node);
+    //     nodes.len() - 1
+    // }
+
+    fn add_node(&self, node: Node) -> NodeIndex {
+        self.nodes.push(node);
+        self.nodes.len() - 1
+    }
+
+    // // fn get_node(&self, index: NodeIndex) -> &'g Node {
+    // fn get_node(&'g self, index: NodeIndex) -> impl Deref<Target = Node> + 'g {
+    //     struct NodeHolder<'g> {
+    //         vec_ref: std::cell::Ref<'g, Vec<Node>>,
+    //         index: NodeIndex,
+    //     }
+
+    //     impl<'g> Deref for NodeHolder<'g> {
+    //         type Target = Node;
+
+    //         fn deref(&self) -> &Self::Target {
+    //             &self.vec_ref[self.index]
+    //         }
+    //     }
+
+    //     let vec_ref = self.nodes.borrow();
+    //     NodeHolder { vec_ref, index }
+    // }
+}
+
+#[derive(Clone)]
+struct Node {
+    // graph: &'g Graph<'g>,
+    car_pos: CarPosition,
+
+    ticks_after_parent: usize,
+    ticks_after_start: usize,
+}
+
+impl<'g> Node {
+    fn section(&self) -> RoadSection {
+        self.car_pos.road_section
+    }
+
+    fn is_end_node(&self, destination: CarPosition) -> bool {
+        if destination.road_section != self.car_pos.road_section {
+            return false;
+        }
+
+        self.car_pos.position_in_section <= destination.position_in_section
+    }
+}
+
+// astar() wants Node to be Eq + Hash + Clone
+// can't #[derive] them cause Grid doesn't implement them
+
+impl Hash for Node {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.car_pos.hash(state);
+        self.ticks_after_parent.hash(state);
+        self.ticks_after_start.hash(state);
+    }
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.car_pos == other.car_pos
+            && self.ticks_after_parent == other.ticks_after_parent
+            && self.ticks_after_start == other.ticks_after_start
+    }
+}
+
+impl Eq for Node {}

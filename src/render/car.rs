@@ -51,6 +51,7 @@ impl<'g> CarRenderer<'g> {
     pub fn render(&self) {
         self.render_car();
         self.render_path();
+        self.render_passenger_count();
     }
 
     pub fn render_car(&self) {
@@ -142,11 +143,18 @@ impl<'g> CarRenderer<'g> {
 
     fn render_path(&self) {
         let agent = &self.car.props.agent;
-        let Some(path) = agent.path() else {
+        let Some(agent) = agent.as_path_agent() else {
+            return; // agent doesn't work using paths
+        };
+
+        let Some(path) = agent.get_path() else {
             return;
         };
 
         let mut sections = path.sections.iter().peekable();
+        // first section is the one the car is currently on
+        // we don't want to render a line over the whole section, skip it
+        sections.next(); 
 
         let mut start = PathLineBound::Car(self.car.position);
         // for path_section in sections {
@@ -157,6 +165,17 @@ impl<'g> CarRenderer<'g> {
                 }
                 None => PathLineBound::Car(path.destination),
             };
+            
+            // edge case: if we are on the last road section, both start
+            // and end will be CarPositions. in that case, we only render the
+            // line if we are not at the destination yet.
+            if let PathLineBound::Car(car_pos) = start {
+                if let PathLineBound::Car(dest_pos) = end {
+                    if car_pos.position_in_section >= dest_pos.position_in_section {
+                        continue;
+                    }
+                }
+            }
 
             self.render_path_line(start, end);
 
@@ -178,6 +197,9 @@ impl<'g> CarRenderer<'g> {
     }
 
     fn get_line_xy(&self, line_bound: PathLineBound, start: bool) -> (f32, f32) {
+        let x;
+        let y;
+
         match line_bound {
             PathLineBound::Car(car_pos) => {
                 let road = self.grid_renderer.road_at(car_pos.road_section);
@@ -187,9 +209,13 @@ impl<'g> CarRenderer<'g> {
 
                 let towards_positive = car_pos.road_section.direction.towards_positive();
                 if towards_positive && start {
-                    return (line_through_car.x2, line_through_car.y2);
+                    // return (line_through_car.x2, line_through_car.y2);
+                    x = line_through_car.x2;
+                    y = line_through_car.y2;
                 } else {
-                    return (line_through_car.x1, line_through_car.y1);
+                    // return (line_through_car.x1, line_through_car.y1);
+                    x = line_through_car.x1;
+                    y = line_through_car.y1;
                 }
             }
 
@@ -205,7 +231,7 @@ impl<'g> CarRenderer<'g> {
 
                 let intersection = line1.intersection(line2);
 
-                let (x, y) = match intersection {
+                (x, y) = match intersection {
                     Some((x, y)) => (x, y),
                     None => {
                         // they are parallel, i.e. two sections in straight line
@@ -216,10 +242,29 @@ impl<'g> CarRenderer<'g> {
                         (line2.x1, line2.y1)
                     }
                 };
-
-                return (x, y);
             }
         }
+
+        (x, y)
+    }
+
+    fn render_passenger_count(&self) {
+        let rect = self.rect();
+        let font_size = rect.w.min(rect.h) / 2.0;
+        let center = rect.center();
+
+        let riding_passengers = self
+            .car
+            .passengers
+            .iter()
+            .filter(|p| p.is_dropping_off())
+            .count();
+        if riding_passengers == 0 {
+            return;
+        }
+
+        let text = riding_passengers.to_string();
+        draw_text(&text, center.x, center.y, font_size, BLACK);
     }
 }
 

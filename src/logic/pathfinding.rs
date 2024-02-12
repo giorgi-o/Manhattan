@@ -3,10 +3,11 @@ use std::collections::VecDeque;
 use pathfinding::directed::astar::astar;
 
 use super::{
-    car::{CarDecision, CarPosition},
+    car::{Car, CarDecision, CarPosition},
     grid::RoadSection,
 };
 
+#[derive(Clone)]
 pub struct Path {
     // first element is current section
     // last element is destination
@@ -17,7 +18,9 @@ pub struct Path {
 }
 
 impl Path {
-    pub fn find(from: CarPosition, to: CarPosition) -> Self {
+    pub fn find(car: &Car, to: CarPosition) -> Self {
+        let from = car.position;
+
         let first = from.road_section;
         let last = to.road_section;
 
@@ -41,11 +44,12 @@ impl Path {
         }
     }
 
-    pub fn pop_next_decision(&mut self) -> Option<CarDecision> {
+    pub fn next_decision(&self) -> Option<CarDecision> {
         // returns None if we already arrived
-        let current_section = self.sections.pop_front().unwrap();
-        let next_section = self.sections.front()?;
+        let current_section = self.sections.get(0).unwrap();
+        let next_section = self.sections.get(1)?;
         let decision = current_section.decision_to_go_to(*next_section).unwrap();
         Some(decision)
     }
+
 }

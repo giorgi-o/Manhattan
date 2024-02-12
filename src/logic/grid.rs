@@ -399,10 +399,47 @@ impl LightState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TrafficLight {
     pub toggle_every_ticks: usize,
     pub state: LightState,
     pub ticks_left: usize,
+}
+
+impl TrafficLight {
+    pub fn tick(&mut self) {
+        if self.ticks_left > 0 {
+            self.ticks_left -= 1;
+        } else {
+            self.state.toggle();
+            self.ticks_left = self.toggle_every_ticks;
+        }
+    }
+
+    // see what the light will be like in X ticks
+    pub fn time_travel(&self, ticks: usize) -> Self {
+        let state_changes = ticks / self.toggle_every_ticks;
+        let remainder = ticks % self.toggle_every_ticks;
+
+        let mut new_state = self.state;
+        if state_changes % 2 == 1 {
+            new_state.toggle();
+        }
+
+        let mut ticks_left = self.ticks_left;
+        if remainder <= ticks_left {
+            ticks_left -= remainder;
+        } else {
+            new_state.toggle();
+            ticks_left = self.toggle_every_ticks - remainder;
+        }
+
+        Self {
+            toggle_every_ticks: self.toggle_every_ticks,
+            state: new_state,
+            ticks_left,
+        }
+    }
 }
 
 pub struct Grid {
@@ -642,11 +679,11 @@ impl Grid {
     fn tick_passengers(&mut self) {
         // spawn passengers if we need to
         let waiting_passengers = self.waiting_passengers.len();
-        let riding_passengers = self
+        let riding_passengers: usize = self
             .cars
             .iter()
-            .filter(|c| c.passenger.is_dropping_off())
-            .count();
+            .map(|c| c.passengers.iter().filter(|p| p.is_dropping_off()).count())
+            .sum();
         let total_passengers = waiting_passengers + riding_passengers;
 
         let passengers_to_spawn = Self::MAX_WAITING_PASSENGERS
@@ -664,31 +701,34 @@ impl Grid {
 
         // make cars pick up passengers
         for car in &mut self.cars {
-            let CarPassenger::PickingUp(passenger_id) = &car.passenger else {
-                continue;
-            };
-            let passenger = self
-                .waiting_passengers
-                .get(passenger_id)
-                .expect("Car is picking up passenger that doesn't exist");
+            for passenger_in_vec in &mut car.passengers {
+                let CarPassenger::PickingUp(passenger_id) = passenger_in_vec else {
+                    continue;
+                };
+                let passenger = self
+                    .waiting_passengers
+                    .get(passenger_id)
+                    .expect("Car is picking up passenger that doesn't exist");
 
-            if car.position == passenger.start {
-                // car is next to passenger, make them enter the car
-                let passenger = self.waiting_passengers.remove(passenger_id).unwrap();
-                car.passenger = CarPassenger::DroppingOff(passenger);
+                if car.position == passenger.start {
+                    // car is next to passenger, make them enter the car
+                    let passenger = self.waiting_passengers.remove(passenger_id).unwrap();
+                    *passenger_in_vec = CarPassenger::DroppingOff(passenger);
+                }
             }
         }
 
         // make cars drop off passengers
         for car in &mut self.cars {
-            let CarPassenger::DroppingOff(passenger) = &car.passenger else {
-                continue;
-            };
+            car.passengers.retain(|passenger| {
+                let CarPassenger::DroppingOff(passenger) = passenger else {
+                    return true;
+                };
 
-            if passenger.destination == car.position {
-                // car reached dropoff destination
-                car.passenger = CarPassenger::None;
-            }
+                // if they are different, we don't drop them off
+                // => we retain the passenger
+                passenger.destination != car.position
+            });
         }
     }
 
@@ -719,7 +759,7 @@ impl Grid {
             .waiting_passengers
             .get(&passenger)
             .expect("Car tried to assign to non-existent passenger");
-        car.passenger = CarPassenger::PickingUp(passenger.id);
+        car.passengers.push(CarPassenger::PickingUp(passenger.id));
     }
 
     pub fn get_passenger(&self, passenger: PassengerId) -> Option<&Passenger> {
