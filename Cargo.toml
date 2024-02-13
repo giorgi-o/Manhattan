@@ -9,6 +9,7 @@ edition = "2021"
 macroquad = "0.4.4"
 rand = "0.8.5"
 pathfinding = "4.8.2"
+pyo3 = { version = "0.20.2", features = ["auto-initialize"] }
 
 # disable mir optimisations in debug mode (does this work?)
 [build]
