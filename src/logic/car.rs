@@ -250,9 +250,8 @@ impl NearestPassenger {
         let closest_passenger = waiting_passengers
             .into_iter()
             .min_by_key(|p| {
-                p.start
-                    .road_section
-                    .manhattan_distance(car.position.road_section)
+                let path_to_passenger = Path::find(car, p.start);
+                path_to_passenger.cost
             })
             .unwrap();
         Some(closest_passenger)
@@ -320,9 +319,7 @@ impl CarPathAgent for NearestPassenger {
                 Path::find(car, passenger.start)
             }
 
-            CarPassenger::DroppingOff(passenger) => {
-                Path::find(car, passenger.destination)
-            }
+            CarPassenger::DroppingOff(passenger) => Path::find(car, passenger.destination),
         };
 
         self.path = Some(path);
