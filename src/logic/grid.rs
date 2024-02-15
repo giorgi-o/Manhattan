@@ -9,7 +9,7 @@ use crate::{
 
 use super::{
     car::{
-        Car, CarDecision, CarPassenger, CarPosition, CarProps, NearestPassenger, RandomDestination,
+        Car, CarDecision, CarPassenger, CarPosition, CarProps, NearestPassenger, PythonAgent, RandomDestination
     },
     passenger::{Passenger, PassengerId},
 };
@@ -485,7 +485,8 @@ impl Grid {
         for _ in 0..1 {
             // let agent = RandomTurns {};
             // let agent = RandomDestination::default();
-            let agent = NearestPassenger::default();
+            // let agent = NearestPassenger::default();
+            let agent = PythonAgent::default();
             let car = CarProps::new(agent, 3);
             this.add_car(car);
         }

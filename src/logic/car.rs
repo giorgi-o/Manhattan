@@ -1,6 +1,8 @@
 use macroquad::color::Color;
 use rand::{seq::SliceRandom, Rng};
 
+use crate::python::bridge::bridge::get_agent_decision;
+
 use super::{
     grid::{Grid, RoadSection},
     passenger::{Passenger, PassengerId},
@@ -322,6 +324,68 @@ impl CarPathAgent for NearestPassenger {
             CarPassenger::DroppingOff(passenger) => Path::find(car, passenger.destination),
         };
 
+        self.path = Some(path);
+    }
+
+    fn get_path(&self) -> Option<&Path> {
+        self.path.as_ref()
+    }
+}
+
+#[derive(Default)]
+pub struct PythonAgent {
+    path: Option<Path>,
+}
+
+impl PythonAgent {
+    fn pick_passenger<'g>(&mut self, grid: &'g mut Grid, car: &'g mut Car) {
+        let mut waiting_passengers = grid.unassigned_passengers();
+        if waiting_passengers.is_empty() {
+            // no available passengers, just roam randomly
+
+            let mut random_agent = RandomDestination::default();
+            random_agent.calculate_path(grid, car);
+            self.path = random_agent.get_path().cloned();
+
+            return;
+        }
+
+        // only look at 10 closest
+        waiting_passengers.truncate(10);
+
+        let mut paths: Vec<Path> = waiting_passengers
+            .iter()
+            .map(|p| Path::find(car, p.start))
+            .collect();
+        let distances = paths.iter().map(|p| p.cost).collect();
+
+        let chosen_passenger_index = get_agent_decision(distances);
+        let chosen_passenger = waiting_passengers[chosen_passenger_index];
+        let chosen_passenger_path = paths.swap_remove(chosen_passenger_index);
+
+        grid.assign_car_to_passenger(car, chosen_passenger.id);
+        self.path = Some(chosen_passenger_path);
+    }
+}
+
+impl CarPathAgent for PythonAgent {
+    fn calculate_path(&mut self, grid: &mut Grid, car: &mut Car) {
+        if car.passengers.is_empty() {
+            self.pick_passenger(grid, car);
+            return;
+        }
+
+        let first_passenger = &car.passengers[0];
+        let destination = match first_passenger {
+            CarPassenger::PickingUp(passenger_id) => {
+                let passenger = grid.get_passenger(*passenger_id).unwrap();
+                passenger.start
+            }
+
+            CarPassenger::DroppingOff(passenger) => passenger.destination,
+        };
+
+        let path = Path::find(car, destination);
         self.path = Some(path);
     }
 

@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
-use pyo3::prelude::*;
-
 use logic::grid::Grid;
+use python::bridge::bridge::{get_agent_decision, initialise_python};
 
 mod logic {
     pub mod car;
@@ -19,22 +18,21 @@ mod render {
     pub mod util;
 }
 
+mod python {
+    pub mod bridge {
+        pub mod bridge;
+        pub mod types;
+    }
+}
+
 fn main() {
+    initialise_python();
+
     let grid = Grid::new();
     render::render_main::start(grid);
 }
 
 // fn main() {
-//     Python::with_gil(|py| {
-//         // add ./python/src to sys.path
-//         let cwd = std::env::current_dir().unwrap();
-//         let src_dir = cwd.join("python").join("src");
-
-//         let sys = py.import("sys").unwrap();
-//         let path = sys.getattr("path").unwrap();
-//         path.call_method("append", (src_dir,), None).unwrap();
-
-//         let main = py.import("main").unwrap();
-//         main.call_method("hello_world", (), None).unwrap();
-//     });
+//     initialise_python();
+//     get_agent_decision(vec![1, 2, 3]);
 // }
