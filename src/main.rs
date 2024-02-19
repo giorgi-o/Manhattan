@@ -1,7 +1,11 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use logic::grid::Grid;
-use python::bridge::bridge::{get_agent_decision, initialise_python};
+use python::bridge::bridge::{initialise_python, start_python};
+use render::render_main::GridBridge;
 
 mod logic {
     pub mod car;
@@ -22,14 +26,14 @@ mod python {
     pub mod bridge {
         pub mod bridge;
         pub mod types;
+        pub mod err_handling;
     }
 }
 
 fn main() {
     initialise_python();
 
-    let grid = Grid::new();
-    render::render_main::start(grid);
+    start_python();
 }
 
 // fn main() {

@@ -16,12 +16,16 @@ pub struct GridRenderer<'g> {
 impl<'g> GridRenderer<'g> {
     pub const MARGIN: f32 = 60.0;
 
+    const BACKGROUND_COLOUR: Color = WHITE;
+
     pub fn new(grid: &'g Grid) -> Self {
         let roads = Self::roads(grid);
         Self { grid, roads }
     }
 
     pub fn render(&self) {
+        clear_background(Self::BACKGROUND_COLOUR);
+
         self.render_roads();
         self.render_intersections();
         self.draw_grid_outline();

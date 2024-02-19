@@ -142,6 +142,11 @@ impl<'g> CarRenderer<'g> {
     }
 
     fn render_path(&self) {
+        // tmp: don't render npc paths
+        if self.car.props.colour == BLUE {
+            return;
+        }
+
         let agent = &self.car.props.agent;
         let Some(agent) = agent.as_path_agent() else {
             return; // agent doesn't work using paths
@@ -154,7 +159,7 @@ impl<'g> CarRenderer<'g> {
         let mut sections = path.sections.iter().peekable();
         // first section is the one the car is currently on
         // we don't want to render a line over the whole section, skip it
-        sections.next(); 
+        sections.next();
 
         let mut start = PathLineBound::Car(self.car.position);
         // for path_section in sections {
@@ -165,7 +170,7 @@ impl<'g> CarRenderer<'g> {
                 }
                 None => PathLineBound::Car(path.destination),
             };
-            
+
             // edge case: if we are on the last road section, both start
             // and end will be CarPositions. in that case, we only render the
             // line if we are not at the destination yet.

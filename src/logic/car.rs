@@ -1,7 +1,6 @@
 use macroquad::color::Color;
+use pyo3::prelude::*;
 use rand::{seq::SliceRandom, Rng};
-
-use crate::python::bridge::bridge::get_agent_decision;
 
 use super::{
     grid::{Grid, RoadSection},
@@ -12,8 +11,11 @@ use super::{
 use macroquad::color::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[pyclass]
 pub struct CarPosition {
+    #[pyo3(get)]
     pub road_section: RoadSection,
+    #[pyo3(get)]
     pub position_in_section: usize, // higher = further along
 }
 
@@ -67,10 +69,12 @@ pub struct CarProps {
 }
 
 impl CarProps {
-    pub fn new(agent: impl CarAgent + Send + Sync + 'static, speed: usize) -> Self {
+    pub const SPEED: usize = 3;
+
+    pub fn new(agent: impl CarAgent + Send + Sync + 'static, speed: usize, colour: Color) -> Self {
         Self {
             agent: Box::new(agent),
-            colour: Self::random_colour(),
+            colour,
             speed,
         }
     }
@@ -130,6 +134,10 @@ impl Car {
             passengers: vec![],
         }
     }
+
+    pub fn find_path(&self, destination: CarPosition) -> Path {
+        Path::find(self.position, destination, self.props.speed)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -144,8 +152,9 @@ pub trait CarAgent {
     fn as_path_agent(&self) -> Option<&dyn CarPathAgent> {
         None
     }
+    fn done(&mut self, grid: &mut Grid, car: &mut Car) {}
 }
-pub trait CarPathAgent: CarAgent {
+pub trait CarPathAgent: CarAgent + std::fmt::Debug {
     // pick a destination, generate a path, and store it.
     // grid and car are &mut because passengers can move from
     // the grid to the car.
@@ -159,11 +168,18 @@ impl<T: CarPathAgent> CarAgent for T {
     fn turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision {
         self.calculate_path(grid, car);
         let Some(path) = self.get_path() else {
-            // turn randomy
+            // turn randomly
             return RandomTurns {}.turn(grid, car);
         };
 
+        if path.next_decision().is_none() {
+            // bug
+            return RandomTurns {}.turn(grid, car);
+        }
+
         let Some(decision) = path.next_decision() else {
+            println!("{:?}", self);
+            println!("{:?}", path);
             panic!("path has no next decision");
         };
 
@@ -198,7 +214,7 @@ impl CarAgent for RandomTurns {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct RandomDestination {
     path: Option<Path>,
 }
@@ -224,9 +240,17 @@ impl CarPathAgent for RandomDestination {
     // }
 
     fn calculate_path(&mut self, grid: &mut Grid, car: &mut Car) {
-        let destination = CarPosition::random(&mut rand::thread_rng());
-        let path = Path::find(car, destination);
-        self.path = Some(path);
+        loop {
+            let destination = CarPosition::random(&mut rand::thread_rng());
+
+            let path = car.find_path(destination);
+            if path.next_decision().is_none() {
+                continue;
+            }
+
+            self.path = Some(path);
+            break;
+        }
     }
 
     fn get_path(&self) -> Option<&Path> {
@@ -234,7 +258,7 @@ impl CarPathAgent for RandomDestination {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct NearestPassenger {
     path: Option<Path>,
 }
@@ -252,7 +276,7 @@ impl NearestPassenger {
         let closest_passenger = waiting_passengers
             .into_iter()
             .min_by_key(|p| {
-                let path_to_passenger = Path::find(car, p.start);
+                let path_to_passenger = car.find_path(p.start);
                 path_to_passenger.cost
             })
             .unwrap();
@@ -318,10 +342,10 @@ impl CarPathAgent for NearestPassenger {
         let path = match &first_passenger {
             CarPassenger::PickingUp(passenger_id) => {
                 let passenger = grid.get_passenger(*passenger_id).unwrap();
-                Path::find(car, passenger.start)
+                car.find_path(passenger.start)
             }
 
-            CarPassenger::DroppingOff(passenger) => Path::find(car, passenger.destination),
+            CarPassenger::DroppingOff(passenger) => car.find_path(passenger.destination),
         };
 
         self.path = Some(path);
@@ -332,14 +356,29 @@ impl CarPathAgent for NearestPassenger {
     }
 }
 
-#[derive(Default)]
-pub struct PythonAgent {
+
+pub struct PythonAgent<F>
+where
+    F: Fn(&mut Grid, &mut Car) -> PassengerId,
+{
     path: Option<Path>,
+    // callback: fn(&mut Grid, &mut Car) -> PassengerId,
+    callback: F,
 }
 
-impl PythonAgent {
+impl<F> PythonAgent<F>
+where
+    F: Fn(&mut Grid, &mut Car) -> PassengerId,
+{
+    pub fn new(callback: F) -> Self {
+        Self {
+            path: None,
+            callback,
+        }
+    }
+
     fn pick_passenger<'g>(&mut self, grid: &'g mut Grid, car: &'g mut Car) {
-        let mut waiting_passengers = grid.unassigned_passengers();
+        /*let mut waiting_passengers = grid.unassigned_passengers();
         if waiting_passengers.is_empty() {
             // no available passengers, just roam randomly
 
@@ -354,21 +393,40 @@ impl PythonAgent {
         waiting_passengers.truncate(10);
 
         let mut paths: Vec<Path> = waiting_passengers
-            .iter()
-            .map(|p| Path::find(car, p.start))
+            .into_iter()
+            .map(|p| car.find_path(p.start))
             .collect();
-        let distances = paths.iter().map(|p| p.cost).collect();
+        let distances: Vec<usize> = paths.iter().map(|p| p.cost).collect();
 
-        let chosen_passenger_index = get_agent_decision(distances);
+        // let chosen_passenger_index = get_agent_decision(distances);
+        let chosen_passenger_index = (self.callback)(grid, car);
+
+        // not optimal to call grid.unassigned_passengers() twice...
+        let waiting_passengers = grid.unassigned_passengers();
         let chosen_passenger = waiting_passengers[chosen_passenger_index];
         let chosen_passenger_path = paths.swap_remove(chosen_passenger_index);
 
-        grid.assign_car_to_passenger(car, chosen_passenger.id);
+        grid.assign_car_to_passenger(car, chosen_passenger.id);*/
+
+        let passenger_id = (self.callback)(grid, car);
+
+        let waiting_passengers = grid.unassigned_passengers();
+        let chosen_passenger = waiting_passengers
+            .into_iter()
+            .find(|p| p.id == passenger_id)
+            .unwrap();
+
+        let chosen_passenger_path = car.find_path(chosen_passenger.start);
         self.path = Some(chosen_passenger_path);
+
+        grid.assign_car_to_passenger(car, chosen_passenger.id);
     }
 }
 
-impl CarPathAgent for PythonAgent {
+impl<F> CarPathAgent for PythonAgent<F>
+where
+    F: Fn(&mut Grid, &mut Car) -> PassengerId,
+{
     fn calculate_path(&mut self, grid: &mut Grid, car: &mut Car) {
         if car.passengers.is_empty() {
             self.pick_passenger(grid, car);
@@ -385,11 +443,20 @@ impl CarPathAgent for PythonAgent {
             CarPassenger::DroppingOff(passenger) => passenger.destination,
         };
 
-        let path = Path::find(car, destination);
+        let path = car.find_path(destination);
         self.path = Some(path);
     }
 
     fn get_path(&self) -> Option<&Path> {
         self.path.as_ref()
+    }
+}
+
+impl<F> std::fmt::Debug for PythonAgent<F>
+where
+    F: Fn(&mut Grid, &mut Car) -> PassengerId,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PythonAgent")
     }
 }

@@ -1,20 +1,23 @@
 use std::collections::{HashMap, HashSet};
 
+use pyo3::prelude::*;
 use rand::Rng;
 
 use crate::{
     logic::car::{NextCarPosition, NullAgent},
-    render::render_main::Game,
+    python::bridge::types::start_of_tick,
 };
 
 use super::{
     car::{
-        Car, CarDecision, CarPassenger, CarPosition, CarProps, NearestPassenger, PythonAgent, RandomDestination
+        Car, CarDecision, CarPassenger, CarPosition, CarProps, NearestPassenger, PythonAgent,
+        RandomDestination,
     },
     passenger::{Passenger, PassengerId},
 };
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[pyclass]
 pub enum Orientation {
     Horizontal,
     Vertical,
@@ -57,6 +60,7 @@ impl Orientation {
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+#[pyclass]
 pub enum Direction {
     Up,
     Down,
@@ -145,10 +149,14 @@ impl Direction {
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+#[pyclass]
 pub struct RoadSection {
     // isize (not usize) because it makes rendering traffic lights easier
+    #[pyo3(get)]
     pub road_index: isize,
+    #[pyo3(get)]
     pub section_index: isize,
+    #[pyo3(get)]
     pub direction: Direction,
     // both indexes start from 0
 }
@@ -378,6 +386,7 @@ impl RoadSection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[pyclass]
 pub enum LightState {
     Red,
     Green,
@@ -400,9 +409,13 @@ impl LightState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[pyclass]
 pub struct TrafficLight {
+    #[pyo3(get)]
     pub toggle_every_ticks: usize,
+    #[pyo3(get)]
     pub state: LightState,
+    #[pyo3(get)]
     pub ticks_left: usize,
 }
 
@@ -443,15 +456,15 @@ impl TrafficLight {
 }
 
 pub struct Grid {
-    cars: Vec<Car>,
+    pub cars: Vec<Car>,
     taken_positions: HashSet<CarPosition>,
 
-    waiting_passengers: HashMap<PassengerId, Passenger>,
+    pub waiting_passengers: HashMap<PassengerId, Passenger>,
 
     // None position = random spawn point
-    cars_to_spawn: Vec<(CarProps, Option<CarPosition>)>,
+    pub cars_to_spawn: Vec<(CarProps, Option<CarPosition>)>,
 
-    traffic_lights: HashMap<RoadSection, TrafficLight>,
+    pub traffic_lights: HashMap<RoadSection, TrafficLight>,
 }
 
 impl Grid {
@@ -460,21 +473,23 @@ impl Grid {
     pub const HORIZONTAL_SECTION_SLOTS: usize = 5;
     pub const VERTICAL_SECTION_SLOTS: usize = 5;
 
-    pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 3 * Game::TICKS_PER_SEC;
+    pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 60; // 3s at 20TPS
 
     pub const MAX_TOTAL_PASSENGERS: usize = Self::HORIZONTAL_ROADS * Self::VERTICAL_ROADS;
-    pub const MAX_WAITING_PASSENGERS: usize = Self::MAX_TOTAL_PASSENGERS / 2;
+    // pub const MAX_WAITING_PASSENGERS: usize = Self::MAX_TOTAL_PASSENGERS / 2;
+    pub const MAX_WAITING_PASSENGERS: usize = 20;
 
     pub fn new() -> Self {
         // assign a traffic light to every road
         let traffic_lights = Self::generate_traffic_lights();
+        let waiting_passengers = Self::generate_passengers();
 
-        let mut this = Self {
+        let this = Self {
             // grid: HashMap::new(),
             cars: Vec::new(),
             taken_positions: HashSet::new(),
 
-            waiting_passengers: HashMap::with_capacity(Self::MAX_WAITING_PASSENGERS),
+            waiting_passengers,
 
             cars_to_spawn: Vec::new(),
 
@@ -482,14 +497,14 @@ impl Grid {
         };
 
         // tmp: spawn X random cars
-        for _ in 0..1 {
-            // let agent = RandomTurns {};
-            // let agent = RandomDestination::default();
-            // let agent = NearestPassenger::default();
-            let agent = PythonAgent::default();
-            let car = CarProps::new(agent, 3);
-            this.add_car(car);
-        }
+        // for _ in 0..1 {
+        //     // let agent = RandomTurns {};
+        //     // let agent = RandomDestination::default();
+        //     // let agent = NearestPassenger::default();
+        //     let agent = PythonAgent::default();
+        //     let car = CarProps::new(agent, 3);
+        //     this.add_car(car);
+        // }
 
         this
     }
@@ -513,12 +528,24 @@ impl Grid {
         traffic_lights
     }
 
+    fn generate_passengers() -> HashMap<PassengerId, Passenger> {
+        let mut waiting_passengers = HashMap::with_capacity(Self::MAX_WAITING_PASSENGERS);
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..Self::MAX_WAITING_PASSENGERS {
+            let passenger = Passenger::random(&mut rng);
+            waiting_passengers.insert(passenger.id, passenger);
+        }
+
+        waiting_passengers
+    }
+
     pub fn cars(&self) -> impl Iterator<Item = &Car> {
         self.cars.iter()
     }
 
-    pub fn add_car(&mut self, car: CarProps) {
-        self.cars_to_spawn.push((car, None));
+    pub fn add_car(&mut self, props: CarProps, position: Option<CarPosition>) {
+        self.cars_to_spawn.push((props, position));
     }
 
     pub fn has_car_at(&self, position: &CarPosition) -> bool {
@@ -529,7 +556,18 @@ impl Grid {
         &self.traffic_lights[section]
     }
 
+    pub fn done(&self) -> bool {
+        self.waiting_passengers.is_empty()
+    }
+
     pub fn tick(&mut self) {
+        start_of_tick(self);
+
+        if self.done() {
+            // finished
+            return;
+        }
+
         self.tick_traffic_lights();
         self.tick_cars();
         self.tick_passengers();
@@ -678,27 +716,27 @@ impl Grid {
     }
 
     fn tick_passengers(&mut self) {
-        // spawn passengers if we need to
-        let waiting_passengers = self.waiting_passengers.len();
-        let riding_passengers: usize = self
-            .cars
-            .iter()
-            .map(|c| c.passengers.iter().filter(|p| p.is_dropping_off()).count())
-            .sum();
-        let total_passengers = waiting_passengers + riding_passengers;
+        // // spawn passengers if we need to
+        // // let waiting_passengers = self.waiting_passengers.len();
+        // // let riding_passengers: usize = self
+        // //     .cars
+        // //     .iter()
+        // //     .map(|c| c.passengers.iter().filter(|p| p.is_dropping_off()).count())
+        // //     .sum();
+        // // let total_passengers = waiting_passengers + riding_passengers;
 
-        let passengers_to_spawn = Self::MAX_WAITING_PASSENGERS
-            - waiting_passengers.min(Self::MAX_TOTAL_PASSENGERS - total_passengers);
+        // let passengers_to_spawn = Self::MAX_WAITING_PASSENGERS
+        //     - waiting_passengers.min(Self::MAX_TOTAL_PASSENGERS - total_passengers);
 
-        if passengers_to_spawn > 0 {
-            // println!("spawning {passengers_to_spawn} passengers");
-            let mut rng = rand::thread_rng();
+        // if passengers_to_spawn > 0 {
+        //     // println!("spawning {passengers_to_spawn} passengers");
+        //     let mut rng = rand::thread_rng();
 
-            for _ in 0..passengers_to_spawn {
-                let passenger = Passenger::random(&mut rng);
-                self.waiting_passengers.insert(passenger.id, passenger);
-            }
-        }
+        //     for _ in 0..passengers_to_spawn {
+        //         let passenger = Passenger::random(&mut rng);
+        //         self.waiting_passengers.insert(passenger.id, passenger);
+        //     }
+        // }
 
         // make cars pick up passengers
         for car in &mut self.cars {
@@ -765,5 +803,11 @@ impl Grid {
 
     pub fn get_passenger(&self, passenger: PassengerId) -> Option<&Passenger> {
         self.waiting_passengers.get(&passenger)
+    }
+}
+
+impl Default for Grid {
+    fn default() -> Self {
+        Self::new()
     }
 }

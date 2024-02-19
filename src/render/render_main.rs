@@ -1,5 +1,6 @@
 use std::{
-    sync::{Mutex, OnceLock},
+    borrow::Borrow,
+    sync::{Arc, Condvar, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -8,34 +9,55 @@ use crate::logic::grid::Grid;
 
 use macroquad::prelude::*;
 
-static GAME: OnceLock<Mutex<Game>> = OnceLock::new();
+// bridge from the grid engine
+#[derive(Clone)]
+pub struct GridBridge {
+    pub mutex: Arc<Mutex<Grid>>,
+}
 
-pub fn start(grid: Grid) {
+static mut GAME: OnceLock<GridBridge> = OnceLock::new();
+
+pub fn start(grid_bridge: GridBridge) {
     // macroquad's main() can't take any arguments.
     // so we sneak the game in through the back door.
 
-    let game = Game { grid };
-    let mutex = Mutex::new(game);
-    let _ = GAME.set(mutex);
+    // let game = Game { grid };
+    // let mutex = Mutex::new(game);
+    unsafe {
+        let _ = GAME.set(grid_bridge);
+    }
 
-    main()
+    std::thread::spawn(main);
 }
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let game = GAME.get().unwrap();
-    let mut game = game.lock().unwrap();
+    println!("starting render_main");
 
-    let time_per_tick = Duration::from_secs_f32(1.0 / Game::TICKS_PER_SEC as f32);
-    let mut last_tick = Instant::now() - Duration::from_secs_f32(999.9);
+    let grid_bridge = unsafe { GAME.take().unwrap() };
+    let mutex = grid_bridge.mutex.as_ref();
+
+    // let time_per_tick = Duration::from_secs_f32(1.0 / Game::TICKS_PER_SEC as f32);
+    // let mut last_tick = Instant::now() - Duration::from_secs_f32(999.9);
 
     loop {
-        if last_tick.elapsed() >= time_per_tick {
-            game.tick();
-            last_tick = Instant::now();
+        {
+            let grid = mutex.lock().unwrap();
+
+            if grid.done() {
+                return;
+            }
+
+            let renderer = GridRenderer::new(&grid);
+            renderer.render();
         }
 
-        game.render();
+        // if last_tick.elapsed() >= time_per_tick {
+        //     game.tick();
+        //     last_tick = Instant::now();
+        // }
+
+        // game.render();
         next_frame().await;
     }
 }
@@ -46,26 +68,5 @@ fn window_conf() -> Conf {
         window_width: 1500,
         window_height: 1000,
         ..Default::default()
-    }
-}
-
-pub struct Game {
-    grid: Grid,
-}
-
-impl Game {
-    pub const TICKS_PER_SEC: usize = 20;
-
-    const BACKGROUND_COLOUR: Color = WHITE;
-
-    fn tick(&mut self) {
-        self.grid.tick();
-    }
-
-    pub fn render(&self) {
-        clear_background(Self::BACKGROUND_COLOUR);
-
-        let grid_renderer = GridRenderer::new(&self.grid);
-        grid_renderer.render();
     }
 }

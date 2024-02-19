@@ -20,13 +20,14 @@ pub struct Path {
 }
 
 impl Path {
-    pub fn find<'g>(car: &'g Car, destination: CarPosition) -> Self {
-        let mut graph = Graph {
+    pub fn find<'g>(start: CarPosition, destination: CarPosition, speed: usize) -> Self {
+        let graph = Graph {
             // grid,
-            car,
+            start,
             destination,
             // nodes: RefCell::default(),
             // nodes: vec![],
+            speed,
         };
 
         let start = graph.start_node();
@@ -74,6 +75,7 @@ impl Path {
     }
 
     pub fn next_decision(&self) -> Option<CarDecision> {
+        // returns None if we already arrived
         let current_section = self.sections.front()?;
         let next_section = self.sections.get(1)?;
         current_section.decision_to_go_to(*next_section)
@@ -82,24 +84,25 @@ impl Path {
 
 type NodeIndex = usize;
 
-struct Graph<'g> {
-    car: &'g Car,
+struct Graph {
+    start: CarPosition,
     destination: CarPosition,
     // nodes: RefCell<Vec<Node>>,
     // nodes: Vec<Node>,
+    speed: usize,
 }
 
-impl<'g> Graph<'g> {
-    fn start_node(&'g self) -> Node {
+impl Graph {
+    fn start_node(&self) -> Node {
         Node {
-            car_pos: self.car.position,
+            car_pos: self.start,
 
             ticks_after_start: 0,
             ticks_after_parent: 0,
         }
     }
 
-    fn successors(&'g self, node: &Node) -> Vec<(Node, usize)> {
+    fn successors(&self, node: &Node) -> Vec<(Node, usize)> {
         // fn successors(&'g self) -> impl Iterator<Item = (Node, usize)> {
         let possible_decisions = node.section().possible_decisions();
 
@@ -132,7 +135,7 @@ impl<'g> Graph<'g> {
     }
 
     // the cost to go here from here to a successor
-    fn ticks_to(&'g self, node: &Node, to: CarPosition) -> usize {
+    fn ticks_to(&self, node: &Node, to: CarPosition) -> usize {
         // count the ticks of:
         // 1. the car reaching the end of the section
         // 2. the traffic light turning green
@@ -141,7 +144,7 @@ impl<'g> Graph<'g> {
         // 1.
         let distance_from_road_end =
             node.section().direction.max_position_in_section() - node.car_pos.position_in_section;
-        let car_speed = self.car.props.speed; // ticks per movement
+        let car_speed = self.speed; // ticks per movement
         let time_to_road_end = distance_from_road_end * car_speed;
 
         // 2.
@@ -210,7 +213,7 @@ struct Node {
     ticks_after_start: usize,
 }
 
-impl<'g> Node {
+impl Node {
     fn section(&self) -> RoadSection {
         self.car_pos.road_section
     }
