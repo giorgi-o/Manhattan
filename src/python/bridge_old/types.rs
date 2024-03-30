@@ -51,7 +51,15 @@ impl PyGrid {
 #[pymethods]
 impl PyGrid {
     #[new]
-    fn py_new(render: bool) -> Self {
+    fn py_new(
+        initial_passengers: u32,
+        passenger_spawn_rate: f32,
+        agent_car_count: u32,
+        npc_car_count: u32,
+        render: bool,
+    ) -> Self {
+        
+
         // println!("PyGrid::new(render={render})");
 
         let grid = Grid::new();

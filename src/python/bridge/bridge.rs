@@ -1,9 +1,22 @@
-use std::{cell::OnceCell, sync::OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use pathfinding::grid::Grid;
-use pyo3::{prelude::*, types::PyFunction};
+use pyo3::prelude::*;
 
-use super::types::PyGrid;
+use crate::{
+    logic::{
+        car::AgentAction,
+        grid::{Direction, Grid, GridOpts},
+        passenger::PassengerId,
+    },
+    render::render_main::GridRef,
+};
+
+use super::{
+    err_handling::UnwrapPyErr,
+    py_grid::{PyCar, PyGridState, PyPassenger},
+};
+
+static MAIN_MODULE: OnceLock<Py<PyAny>> = OnceLock::new();
 
 pub fn initialise_python() {
     pyo3::prepare_freethreaded_python();
@@ -25,14 +38,8 @@ pub fn initialise_python() {
         Ok(())
     });
 
-    if let Err(e) = res {
-        Python::with_gil(|py| {
-            panic!("{}\n{}", e, e.traceback(py).unwrap().format().unwrap());
-        })
-    }
+    res.unwrap_py();
 }
-
-static MAIN_MODULE: OnceLock<Py<PyAny>> = OnceLock::new();
 
 pub fn main_module(py: Python<'_>) -> &PyModule {
     let main = MAIN_MODULE.get().expect("Main module not imported!");
@@ -43,11 +50,10 @@ pub fn main_module(py: Python<'_>) -> &PyModule {
 pub fn start_python() {
     let res: PyResult<()> = {
         Python::with_gil(|py| {
-            let main = main_module(py);
+            let main_module = main_module(py);
+            let rust_module = exported_python_module(py)?;
 
-            let rust_module = rust_module(py)?;
-
-            let start = main.getattr("start")?;
+            let start = main_module.getattr("start")?;
             start.call1((rust_module,))?;
 
             Ok(())
@@ -61,33 +67,148 @@ pub fn start_python() {
     }
 }
 
-static AGENT_CB: OnceLock<Py<PyAny>> = OnceLock::new();
-static TRANSITION_CB: OnceLock<Py<PyAny>> = OnceLock::new();
-
-#[pyfunction]
-fn set_agent_callback(cb: Py<PyAny>) {
-    AGENT_CB.set(cb).unwrap();
-}
-
-#[pyfunction]
-fn set_transition_callback(cb: Py<PyAny>) {
-    TRANSITION_CB.set(cb).unwrap();
-}
-
-pub fn agent_cb() -> &'static Py<PyAny> {
-    AGENT_CB.get().unwrap()
-}
-
-pub fn transition_cb() -> &'static Py<PyAny> {
-    TRANSITION_CB.get().unwrap()
-}
-
-fn rust_module(py: Python<'_>) -> PyResult<&PyModule> {
+fn exported_python_module(py: Python<'_>) -> PyResult<&PyModule> {
     let module = PyModule::new(py, "rust")?;
 
-    module.add_class::<PyGrid>()?;
-    module.add_function(wrap_pyfunction!(set_agent_callback, module)?)?;
-    module.add_function(wrap_pyfunction!(set_transition_callback, module)?)?;
+    module.add_class::<PyGridEnv>()?;
+    module.add_class::<GridOpts>()?;
+    module.add_class::<PyAction>()?;
+    module.add_class::<Direction>()?;
 
     Ok(module)
+}
+
+#[pyclass]
+pub struct PyGridEnv {
+    grid_ref: GridRef,
+}
+
+#[pymethods]
+impl PyGridEnv {
+    #[new]
+    fn py_new(python_agent: PyObject, opts: GridOpts, render: bool) -> Self {
+        let agent = PythonAgentWrapper::new(python_agent);
+        let grid = Grid::new(opts, agent);
+
+        let mutex = Arc::new(Mutex::new(grid));
+        let grid_ref = GridRef { mutex };
+
+        if render {
+            crate::render::render_main::start(grid_ref.clone());
+        }
+
+        Self { grid_ref }
+    }
+
+    fn tick(&self) {
+        self.grid_ref.lock().tick();
+    }
+}
+
+#[derive(Clone)]
+pub struct PythonAgentWrapper {
+    py_obj: PyObject,
+}
+
+impl PythonAgentWrapper {
+    fn new(py_obj: PyObject) -> Self {
+        // check it has all the required methods
+        Python::with_gil(|py| {
+            let obj = py_obj.as_ref(py);
+            assert!(obj.hasattr("get_action").unwrap());
+            assert!(obj.hasattr("transition_happened").unwrap());
+        });
+
+        Self { py_obj }
+    }
+
+    pub fn get_action(&self, state: PyGridState) -> PyAction {
+        assert!(state.has_pov());
+
+        Python::with_gil(|py| {
+            let obj = self.py_obj.as_ref(py);
+
+            let action = obj.call_method1("get_action", (state,)).unwrap();
+            let action: PyAction = action.extract().unwrap();
+
+            action
+        })
+    }
+
+    pub fn transition_happened(
+        &self,
+        state: PyGridState,
+        action: PyAction,
+        new_state: PyGridState,
+        reward: f32,
+    ) {
+        Python::with_gil(|py| {
+            let obj = self.py_obj.as_ref(py);
+
+            obj.call_method1(
+                "transition_happened",
+                (state, action.raw, new_state, reward),
+            )
+            .unwrap();
+        });
+    }
+}
+
+#[derive(Clone, Debug)]
+#[pyclass]
+pub struct PyAction {
+    raw: PyObject, // i.e. pytorch neurons
+    #[pyo3(get)]
+    pick_up_passenger: Option<PyPassenger>,
+    #[pyo3(get)]
+    drop_off_passenger: Option<PyPassenger>,
+    #[pyo3(get)]
+    head_towards: Option<Direction>,
+}
+
+#[pymethods]
+impl PyAction {
+    #[staticmethod]
+    fn pick_up_passenger(passenger: PyPassenger, raw: PyObject) -> Self {
+        Self {
+            raw,
+            pick_up_passenger: Some(passenger),
+            drop_off_passenger: None,
+            head_towards: None,
+        }
+    }
+
+    #[staticmethod]
+    fn drop_off_passenger(passenger: PyPassenger, raw: PyObject) -> Self {
+        Self {
+            raw,
+            pick_up_passenger: None,
+            drop_off_passenger: Some(passenger),
+            head_towards: None,
+        }
+    }
+
+    #[staticmethod]
+    fn head_towards(dir: Direction, raw: PyObject) -> Self {
+        Self {
+            raw,
+            pick_up_passenger: None,
+            drop_off_passenger: None,
+            head_towards: Some(dir),
+        }
+    }
+}
+
+impl From<PyAction> for AgentAction {
+    fn from(py_action: PyAction) -> Self {
+        if let Some(passenger) = py_action.pick_up_passenger {
+            Self::PickUp(passenger.id)
+        } else if let Some(passenger) = py_action.drop_off_passenger {
+            Self::DropOff(passenger.id)
+        } else if let Some(head_towards) = py_action.head_towards {
+            Self::HeadTowards(head_towards)
+        } else {
+            panic!("invalid PyAction (all None)")
+        }
+    }
 }

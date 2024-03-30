@@ -331,7 +331,7 @@ class DqnEpisode:
         # self.transitions: list[Transition] = []
 
     def start(self):
-        TPS: int | None = 5
+        TPS: int | None = 10
 
         last_tick = time.time()
 

@@ -66,6 +66,11 @@ impl Path {
         }
     }
 
+    pub fn distance(start: CarPosition, end: CarPosition, speed: usize) -> usize {
+        let path = Self::find(start, end, speed);
+        path.cost
+    }
+
     pub fn pop_next_decision(&mut self) -> Option<CarDecision> {
         // returns None if we already arrived
         let current_section = self.sections.pop_front().unwrap();

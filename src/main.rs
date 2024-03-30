@@ -5,7 +5,7 @@ use std::{
 
 use logic::grid::Grid;
 use python::bridge::bridge::{initialise_python, start_python};
-use render::render_main::GridBridge;
+use render::render_main::GridRef;
 
 mod logic {
     pub mod car;
@@ -25,8 +25,9 @@ mod render {
 mod python {
     pub mod bridge {
         pub mod bridge;
-        pub mod types;
+        // pub mod types;
         pub mod err_handling;
+        pub mod py_grid;
     }
 }
 

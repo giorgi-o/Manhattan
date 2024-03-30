@@ -142,8 +142,8 @@ impl<'g> CarRenderer<'g> {
     }
 
     fn render_path(&self) {
-        // tmp: don't render npc paths
-        if self.car.props.colour == BLUE {
+        // don't render npc paths
+        if self.car.props.agent.is_npc() {
             return;
         }
 

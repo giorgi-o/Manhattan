@@ -24,22 +24,25 @@ impl PassengerId {
     }
 }
 
+#[derive(Debug)]
 pub struct Passenger {
     pub id: PassengerId,
     pub start: CarPosition,
     pub destination: CarPosition,
     pub car_on_its_way: bool,
     pub colour: Color,
+    pub start_tick: usize,
 }
 
 impl Passenger {
-    pub fn random(mut rng: impl Rng) -> Self {
+    pub fn random(mut rng: impl Rng, current_tick: usize) -> Self {
         Self {
             id: PassengerId::next(),
             start: CarPosition::random(&mut rng),
             destination: CarPosition::random(rng),
             car_on_its_way: false,
             colour: ORANGE,
+            start_tick: current_tick,
         }
     }
 }

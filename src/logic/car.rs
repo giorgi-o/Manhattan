@@ -1,9 +1,16 @@
+use std::sync::Mutex;
+
 use macroquad::color::Color;
 use pyo3::prelude::*;
 use rand::{seq::SliceRandom, Rng};
 
+use crate::python::bridge::{
+    bridge::{PyAction, PythonAgentWrapper},
+    py_grid::{PyCar, PyGridState},
+};
+
 use super::{
-    grid::{Grid, RoadSection},
+    grid::{Direction, Grid, RoadSection},
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
 };
@@ -63,7 +70,7 @@ impl CarPosition {
 }
 
 pub struct CarProps {
-    pub agent: Box<dyn CarAgent + Send + Sync>,
+    pub agent: Box<dyn CarAgent>,
     pub colour: Color,
     pub speed: usize, // ticks per movement
 }
@@ -71,7 +78,7 @@ pub struct CarProps {
 impl CarProps {
     pub const SPEED: usize = 3;
 
-    pub fn new(agent: impl CarAgent + Send + Sync + 'static, speed: usize, colour: Color) -> Self {
+    pub fn new(agent: impl CarAgent + 'static, speed: usize, colour: Color) -> Self {
         Self {
             agent: Box::new(agent),
             colour,
@@ -93,6 +100,7 @@ impl CarProps {
     }
 }
 
+#[derive(Debug)]
 pub enum CarPassenger {
     PickingUp(PassengerId),
     DroppingOff(Passenger),
@@ -101,6 +109,13 @@ pub enum CarPassenger {
 impl CarPassenger {
     pub fn is_dropping_off(&self) -> bool {
         matches!(self, Self::DroppingOff(_))
+    }
+
+    pub fn is_id(&self, id: PassengerId) -> bool {
+        match self {
+            Self::PickingUp(passenger_id) => *passenger_id == id,
+            Self::DroppingOff(passenger) => passenger.id == id,
+        }
     }
 }
 
@@ -114,18 +129,6 @@ pub struct Car {
 }
 
 impl Car {
-    // speed unit: "progress" per second
-    // pub const STRAIGHT_SPEED: f32 = 0.3;
-    // pub const TURN_SPEED: f32 = 1.;
-    // pub const SPEED: f32 = 0.3; // progress per second
-
-    // pub fn new(position: CarPosition, agent: impl CarAgent + Send + Sync + 'static) -> Self {
-    //     Self {
-    //         position,
-    //         agent: Box::new(agent),
-    //     }
-    // }
-
     pub fn new(props: CarProps, position: CarPosition) -> Self {
         Self {
             props,
@@ -147,12 +150,19 @@ pub enum CarDecision {
     TurnRight,
 }
 
-pub trait CarAgent {
-    fn turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision;
+// pub trait CarAgent: Send + Sync {
+pub trait CarAgent: Send {
+    fn get_turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision;
     fn as_path_agent(&self) -> Option<&dyn CarPathAgent> {
         None
     }
-    fn done(&mut self, grid: &mut Grid, car: &mut Car) {}
+
+    fn as_py_agent(&self) -> Option<&PythonAgent> {
+        None
+    }
+    fn is_npc(&self) -> bool {
+        self.as_py_agent().is_none()
+    }
 }
 pub trait CarPathAgent: CarAgent + std::fmt::Debug {
     // pick a destination, generate a path, and store it.
@@ -161,20 +171,26 @@ pub trait CarPathAgent: CarAgent + std::fmt::Debug {
     fn calculate_path(&mut self, grid: &mut Grid, car: &mut Car);
 
     // return the previously generated path if there is one.
-    fn get_path(&self) -> Option<&Path>;
+    fn get_path(&self) -> Option<&Path> {
+        None
+    }
+
+    fn as_py_agent(&self) -> Option<&PythonAgent> {
+        None
+    }
 }
 
 impl<T: CarPathAgent> CarAgent for T {
-    fn turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision {
+    fn get_turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision {
         self.calculate_path(grid, car);
         let Some(path) = self.get_path() else {
             // turn randomly
-            return RandomTurns {}.turn(grid, car);
+            return RandomTurns {}.get_turn(grid, car);
         };
 
         if path.next_decision().is_none() {
             // bug
-            return RandomTurns {}.turn(grid, car);
+            return RandomTurns {}.get_turn(grid, car);
         }
 
         let Some(decision) = path.next_decision() else {
@@ -189,13 +205,17 @@ impl<T: CarPathAgent> CarAgent for T {
     fn as_path_agent(&self) -> Option<&dyn CarPathAgent> {
         Some(self)
     }
+
+    fn as_py_agent(&self) -> Option<&PythonAgent> {
+        CarPathAgent::as_py_agent(self)
+    }
 }
 
 // temporary placeholder agent to put instead of the real agent
 pub struct NullAgent {}
 
 impl CarAgent for NullAgent {
-    fn turn(&mut self, _grid: &mut Grid, _car: &mut Car) -> CarDecision {
+    fn get_turn(&mut self, _grid: &mut Grid, _car: &mut Car) -> CarDecision {
         unreachable!()
     }
 }
@@ -203,10 +223,7 @@ impl CarAgent for NullAgent {
 pub struct RandomTurns {}
 
 impl CarAgent for RandomTurns {
-    fn turn(&mut self, _grid: &mut Grid, car: &mut Car) -> CarDecision {
-        // *options
-        //     .choose(&mut rand::thread_rng())
-        //     .expect("List of possible car decisions is empty")
+    fn get_turn(&mut self, _grid: &mut Grid, car: &mut Car) -> CarDecision {
         let options = car.position.road_section.possible_decisions();
         *options
             .choose(&mut rand::thread_rng())
@@ -220,25 +237,6 @@ pub struct RandomDestination {
 }
 
 impl CarPathAgent for RandomDestination {
-    // fn turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision {
-    //     if self.path.is_none() {
-    //         let destination = CarPosition::random(&mut rand::thread_rng());
-    //         let path = Path::find(car.position, destination, grid);
-    //         self.path = Some(path);
-    //     }
-    //     let path = self.path.as_mut().unwrap();
-    //     path.pop_next_decision().unwrap_or_else(|| {
-    //         // we already arrived, delete path and recursively call ourselves
-    //         // to create new one
-    //         self.path = None;
-    //         self.turn(grid, car)
-    //     })
-    // }
-
-    // fn path(&mut self, grid: &mut Grid, car: &mut Car) -> Option<&Path> {
-    //     self.path.as_ref()
-    // }
-
     fn calculate_path(&mut self, grid: &mut Grid, car: &mut Car) {
         loop {
             let destination = CarPosition::random(&mut rand::thread_rng());
@@ -272,7 +270,6 @@ impl NearestPassenger {
         }
 
         // find closest one
-        // todo: use a* path cost instead of manhattan distance
         let closest_passenger = waiting_passengers
             .into_iter()
             .min_by_key(|p| {
@@ -283,43 +280,6 @@ impl NearestPassenger {
         Some(closest_passenger)
     }
 }
-
-/*
-impl CarAgent for NearestPassenger {
-    fn turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision {
-        // let decision = path.pop_next_decision().unwrap();
-        // self.path = Some(path);
-        // decision
-        todo!()
-    }
-
-    fn path(&mut self, grid: &mut Grid, car: &mut Car) -> Option<Path> {
-        if car.passengers.is_empty() {
-            // assign ourselves to the closest passenger
-            let closest_passenger = self.pick_passenger(grid, car);
-            let Some(closest_passenger) = closest_passenger else {
-                // no available passengers, just roam randomly
-                return RandomTurns {}.turn(grid, car);
-            };
-
-            grid.assign_car_to_passenger(car, closest_passenger.id);
-        }
-
-        let first_passenger = &car.passengers[0];
-
-        match &first_passenger {
-            CarPassenger::PickingUp(passenger_id) => {
-                let passenger = grid.get_passenger(*passenger_id).unwrap();
-                Path::find(car.position, passenger.start, grid)
-            }
-
-            CarPassenger::DroppingOff(passenger) => {
-                Path::find(car.position, passenger.destination, grid)
-            }
-        };
-    }
-}
-*/
 
 impl CarPathAgent for NearestPassenger {
     fn calculate_path(&mut self, grid: &mut Grid, car: &mut Car) {
@@ -341,7 +301,7 @@ impl CarPathAgent for NearestPassenger {
 
         let path = match &first_passenger {
             CarPassenger::PickingUp(passenger_id) => {
-                let passenger = grid.get_passenger(*passenger_id).unwrap();
+                let passenger = grid.get_idle_passenger(*passenger_id).unwrap();
                 car.find_path(passenger.start)
             }
 
@@ -356,106 +316,144 @@ impl CarPathAgent for NearestPassenger {
     }
 }
 
-
-pub struct PythonAgent<F>
-where
-    F: Fn(&mut Grid, &mut Car) -> PassengerId,
-{
-    path: Option<Path>,
-    // callback: fn(&mut Grid, &mut Car) -> PassengerId,
-    callback: F,
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum AgentAction {
+    PickUp(PassengerId),
+    DropOff(PassengerId),
+    HeadTowards(Direction),
 }
 
-impl<F> PythonAgent<F>
-where
-    F: Fn(&mut Grid, &mut Car) -> PassengerId,
-{
-    pub fn new(callback: F) -> Self {
+pub struct PythonAgent {
+    path: Option<Path>,
+    python_wrapper: PythonAgentWrapper,
+
+    // store the state/action pairs, then when we get the new
+    // state and reward, we send the full transitions to
+    // python to learn from
+    half_transitions: Mutex<Option<(PyGridState, PyAction)>>,
+}
+
+impl PythonAgent {
+    pub fn new(python_wrapper: PythonAgentWrapper) -> Self {
         Self {
             path: None,
-            callback,
+            python_wrapper,
+            half_transitions: Mutex::new(None),
         }
     }
 
-    fn pick_passenger<'g>(&mut self, grid: &'g mut Grid, car: &'g mut Car) {
-        /*let mut waiting_passengers = grid.unassigned_passengers();
-        if waiting_passengers.is_empty() {
-            // no available passengers, just roam randomly
+    pub fn end_of_tick(&self, new_state: PyGridState, reward: f32) {
+        let mut guard = self.half_transitions.lock().unwrap();
+        let Some((old_state, action)) = guard.take() else {
+            return; // first tick, car just spawned
+        };
 
-            let mut random_agent = RandomDestination::default();
-            random_agent.calculate_path(grid, car);
-            self.path = random_agent.get_path().cloned();
-
-            return;
-        }
-
-        // only look at 10 closest
-        waiting_passengers.truncate(10);
-
-        let mut paths: Vec<Path> = waiting_passengers
-            .into_iter()
-            .map(|p| car.find_path(p.start))
-            .collect();
-        let distances: Vec<usize> = paths.iter().map(|p| p.cost).collect();
-
-        // let chosen_passenger_index = get_agent_decision(distances);
-        let chosen_passenger_index = (self.callback)(grid, car);
-
-        // not optimal to call grid.unassigned_passengers() twice...
-        let waiting_passengers = grid.unassigned_passengers();
-        let chosen_passenger = waiting_passengers[chosen_passenger_index];
-        let chosen_passenger_path = paths.swap_remove(chosen_passenger_index);
-
-        grid.assign_car_to_passenger(car, chosen_passenger.id);*/
-
-        let passenger_id = (self.callback)(grid, car);
-
-        let waiting_passengers = grid.unassigned_passengers();
-        let chosen_passenger = waiting_passengers
-            .into_iter()
-            .find(|p| p.id == passenger_id)
-            .unwrap();
-
-        let chosen_passenger_path = car.find_path(chosen_passenger.start);
-        self.path = Some(chosen_passenger_path);
-
-        grid.assign_car_to_passenger(car, chosen_passenger.id);
+        self.python_wrapper
+            .transition_happened(old_state, action, new_state, reward);
     }
 }
 
-impl<F> CarPathAgent for PythonAgent<F>
-where
-    F: Fn(&mut Grid, &mut Car) -> PassengerId,
-{
+impl CarPathAgent for PythonAgent {
     fn calculate_path(&mut self, grid: &mut Grid, car: &mut Car) {
-        if car.passengers.is_empty() {
-            self.pick_passenger(grid, car);
-            return;
-        }
+        let py_state = grid.py_state(car);
+        let py_action = self.python_wrapper.get_action(py_state.clone());
 
-        let first_passenger = &car.passengers[0];
-        let destination = match first_passenger {
-            CarPassenger::PickingUp(passenger_id) => {
-                let passenger = grid.get_passenger(*passenger_id).unwrap();
-                passenger.start
+        let half_transition = (py_state, py_action.clone());
+        let mut guard = self.half_transitions.lock().unwrap();
+        assert!(guard.is_none());
+        *guard = Some(half_transition);
+
+        let agent_action: AgentAction = py_action.into();
+        match agent_action {
+            AgentAction::PickUp(passenger_id) => {
+                grid.assign_car_to_passenger(car, passenger_id);
+
+                let passenger = grid
+                    .get_idle_passenger(passenger_id)
+                    .expect("Tried picking up passenger not on the grid");
+
+                let path = car.find_path(passenger.start);
+                self.path = Some(path);
             }
 
-            CarPassenger::DroppingOff(passenger) => passenger.destination,
-        };
+            AgentAction::DropOff(passenger_id) => {
+                let passenger = car
+                    .passengers
+                    .iter()
+                    .find_map(|p| {
+                        let CarPassenger::DroppingOff(p) = p else {
+                            return None;
+                        };
+                        (p.id == passenger_id).then_some(p)
+                    })
+                    .expect("Tried dropping off passenger not in the car");
 
-        let path = car.find_path(destination);
-        self.path = Some(path);
+                let path = car.find_path(passenger.destination);
+                self.path = Some(path);
+            }
+
+            AgentAction::HeadTowards(direction) => {
+                let current_road_section = car.position.road_section;
+                let current_direction = current_road_section.direction;
+
+                let possible_decisions = current_road_section.possible_decisions();
+                let possible_next_positions = possible_decisions
+                    .into_iter()
+                    .filter_map(|d| current_road_section.take_decision(d))
+                    .collect::<Vec<_>>();
+
+                let sort_fn = |a: &RoadSection, b: &RoadSection| {
+                    let (ax, ay) = a.checkerboard_coords();
+                    let (bx, by) = b.checkerboard_coords();
+
+                    match direction {
+                        Direction::Up => ay.total_cmp(&by),
+                        Direction::Down => by.total_cmp(&ay),
+                        Direction::Left => ax.total_cmp(&bx),
+                        Direction::Right => bx.total_cmp(&ax),
+                    }
+                };
+
+                let new_road_section = possible_next_positions.into_iter().min_by(sort_fn).unwrap();
+
+                // let mut new_road_section = current_road_section.clone();
+
+                // let horizontal = direction.is_horizontal();
+                // let towards_positive = direction.towards_positive();
+                // let offset = if towards_positive { 1 } else { -1 };
+
+                // if horizontal == current_direction.is_horizontal() {
+                //     new_road_section.section_index += offset;
+                // } else {
+                //     new_road_section.road_index += offset;
+                // }
+
+                // if new_road_section.valid().is_err() {
+                //     new_road_section = current_road_section;
+                //     new_road_section.direction = new_road_section.direction.inverted();
+                // }
+
+                let destination = CarPosition {
+                    road_section: new_road_section,
+                    position_in_section: 0,
+                };
+
+                let path = car.find_path(destination);
+                self.path = Some(path);
+            }
+        }
     }
 
     fn get_path(&self) -> Option<&Path> {
         self.path.as_ref()
     }
+
+    fn as_py_agent(&self) -> Option<&PythonAgent> {
+        Some(self)
+    }
 }
 
-impl<F> std::fmt::Debug for PythonAgent<F>
-where
-    F: Fn(&mut Grid, &mut Car) -> PassengerId,
-{
+impl std::fmt::Debug for PythonAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "PythonAgent")
     }

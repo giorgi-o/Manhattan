@@ -1,54 +1,42 @@
-print("Importing main.py")
-
+print("Importing main.py v2")
 
 import time
 
-from dqn.dqn import DQN
-from environment.manhattan import ManhattanEnv
-
-
-def hello_world():
-    print("Hello World")
-
-
-# def agent(input: list[int]):
-#     print(f"agent(): {input}")
-
-#     # return index of lowest number
-#     return input.index(min(input))
-
 
 def start(rust):
+    GridEnv = rust.PyGridEnv
+    GridOpts = rust.GridOpts
+    Action = rust.PyAction
+    Direction = rust.Direction
 
-    print(f"{rust.Grid=}")
+    opts = GridOpts(
+        initial_passenger_count=10,
+        passenger_spawn_rate=0.1,
+        agent_car_count=2,
+        npc_car_count=15,
+    )
 
-    env = ManhattanEnv(rust, agent_cars=1, npc_cars=50, passenger_radius=10, render=True)
-    dqn = DQN(environment=env, episode_count=1000, timestep_count=100000, gamma=1.0)
+    class CarAgent:
+        def get_action(self, state):
+            pov_car = state.pov_car
 
-    rust.set_agent_callback(env.agent_callback)
-    rust.set_transition_callback(env.timestep_callback)
+            if len(pov_car.passengers) > 0:
+                passenger = pov_car.passengers[0]
+                return Action.drop_off_passenger(passenger, None)
 
-    dqn.launch()
+            if len(state.idle_passengers) > 0:
+                closest_passenger = state.idle_passengers[0]
+                return Action.pick_up_passenger(closest_passenger, None)
 
-    # grid = rust.Grid(render=True)
-    # print(f"{grid=}")
+            return Action.head_towards(Direction.Up)
 
-    # grid.add_agent_car(callback)
-    # for _ in range(200):
-    #     grid.add_npc_car()
+        def transition_happened(self, state, action, new_state, reward):
+            print(f"transition_happened: {state=}, {action=}, {new_state=}, {reward=}")
 
-    # TPS = 20
-    # last_tick = time.time()
+    agent = CarAgent()
+    env = GridEnv(agent, opts, render=True)
 
-    # while not grid.done():
-    #     grid.tick()
+    while True:
+        env.tick()
 
-    # now = time.time()
-    # if now - last_tick < 1 / TPS:
-    #     time.sleep(1 / TPS - (now - last_tick))
-    #     pass
-    # last_tick = now
-
-
-# def callback(*kwargs):
-#     print(f"callback: {kwargs}")
+        time.sleep(0.01)

@@ -1,17 +1,21 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    mem,
+};
 
+use macroquad::color::{BLUE, RED};
 use pyo3::prelude::*;
 use rand::Rng;
 
 use crate::{
     logic::car::{NextCarPosition, NullAgent},
-    python::bridge::types::start_of_tick,
+    python::bridge::{bridge::PythonAgentWrapper, py_grid::PyGridState},
 };
 
 use super::{
     car::{
         Car, CarDecision, CarPassenger, CarPosition, CarProps, NearestPassenger, PythonAgent,
-        RandomDestination,
+        RandomDestination, RandomTurns,
     },
     passenger::{Passenger, PassengerId},
 };
@@ -363,14 +367,18 @@ impl RoadSection {
             .find(|d| self.take_decision(*d).is_some_and(|s| s == destination))
     }
 
-    pub fn checkerboard_coords(self) -> (isize, isize) {
+    pub fn checkerboard_coords(self) -> (f32, f32) {
         // if the grid was a checkerboard. no horizontal/vertical coords.
         // what would the current x and y be
         // (useful for calculating manhattan distance)
+        // if the car is between two roads, the value will be x.5
+
+        let section_index = self.section_index as f32 + 0.5;
+        let road_index = self.road_index as f32;
 
         match self.direction.orientation() {
-            Orientation::Horizontal => (self.section_index, self.road_index),
-            Orientation::Vertical => (self.road_index, self.section_index),
+            Orientation::Horizontal => (section_index, road_index),
+            Orientation::Vertical => (road_index, section_index),
         }
     }
 
@@ -378,8 +386,8 @@ impl RoadSection {
         let self_coords = self.checkerboard_coords();
         let other_coords = other.checkerboard_coords();
 
-        let dx = self_coords.0.abs_diff(other_coords.0);
-        let dy = self_coords.1.abs_diff(other_coords.1);
+        let dx = (self_coords.0 - other_coords.0).abs() as usize;
+        let dy = (self_coords.1 - other_coords.1).abs() as usize;
 
         dx + dy
     }
@@ -455,7 +463,46 @@ impl TrafficLight {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+#[pyclass]
+pub struct GridOpts {
+    #[pyo3(get)]
+    pub initial_passenger_count: u32, // number of passengers on the grid at the start
+    #[pyo3(get)]
+    pub passenger_spawn_rate: f32, // chance of spawning a new passenger per tick
+    #[pyo3(get)]
+    pub agent_car_count: u32,
+    #[pyo3(get)]
+    pub npc_car_count: u32,
+}
+
+#[pymethods]
+impl GridOpts {
+    #[new]
+    fn new(
+        initial_passenger_count: u32,
+        passenger_spawn_rate: f32,
+        agent_car_count: u32,
+        npc_car_count: u32,
+    ) -> Self {
+        Self {
+            initial_passenger_count,
+            passenger_spawn_rate,
+            agent_car_count,
+            npc_car_count,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct TickEvents {
+    // to calculate tick reward
+    passengers_dropped_off: Vec<Passenger>,
+}
+
 pub struct Grid {
+    pub opts: GridOpts,
+
     pub cars: Vec<Car>,
     taken_positions: HashSet<CarPosition>,
 
@@ -465,6 +512,11 @@ pub struct Grid {
     pub cars_to_spawn: Vec<(CarProps, Option<CarPosition>)>,
 
     pub traffic_lights: HashMap<RoadSection, TrafficLight>,
+
+    pub ticks_passed: usize,
+
+    pub tick_state: Option<PyGridState>,
+    tick_events: TickEvents,
 }
 
 impl Grid {
@@ -475,16 +527,20 @@ impl Grid {
 
     pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 60; // 3s at 20TPS
 
-    pub const MAX_TOTAL_PASSENGERS: usize = Self::HORIZONTAL_ROADS * Self::VERTICAL_ROADS;
+    pub const CAR_SPEED: usize = 3;
+
+    // pub const MAX_TOTAL_PASSENGERS: usize = Self::HORIZONTAL_ROADS * Self::VERTICAL_ROADS;
     // pub const MAX_WAITING_PASSENGERS: usize = Self::MAX_TOTAL_PASSENGERS / 2;
     pub const MAX_WAITING_PASSENGERS: usize = 20;
 
-    pub fn new() -> Self {
+    pub fn new(opts: GridOpts, python_agent: PythonAgentWrapper) -> Self {
         // assign a traffic light to every road
         let traffic_lights = Self::generate_traffic_lights();
-        let waiting_passengers = Self::generate_passengers();
+        let waiting_passengers = Self::generate_passengers(opts.initial_passenger_count);
 
-        let this = Self {
+        let mut this = Self {
+            opts,
+
             // grid: HashMap::new(),
             cars: Vec::new(),
             taken_positions: HashSet::new(),
@@ -494,6 +550,11 @@ impl Grid {
             cars_to_spawn: Vec::new(),
 
             traffic_lights,
+
+            ticks_passed: 0,
+
+            tick_state: None,
+            tick_events: TickEvents::default(),
         };
 
         // tmp: spawn X random cars
@@ -505,6 +566,23 @@ impl Grid {
         //     let car = CarProps::new(agent, 3);
         //     this.add_car(car);
         // }
+
+        // spawn required npc cars
+        for _ in 0..opts.npc_car_count {
+            let npc_props = CarProps::new(RandomTurns {}, Self::CAR_SPEED, BLUE);
+            this.add_car(npc_props, None);
+        }
+
+        // spawn required agent cars
+        for _ in 0..opts.agent_car_count {
+            // let agent = PythonAgent::new();
+            // let car = CarProps::new(agent, 3);
+            // this.add_car(car);
+
+            let python_agent = PythonAgent::new(python_agent.clone());
+            let agent_props = CarProps::new(python_agent, Self::CAR_SPEED, RED);
+            this.add_car(agent_props, None);
+        }
 
         this
     }
@@ -528,12 +606,12 @@ impl Grid {
         traffic_lights
     }
 
-    fn generate_passengers() -> HashMap<PassengerId, Passenger> {
+    fn generate_passengers(count: u32) -> HashMap<PassengerId, Passenger> {
         let mut waiting_passengers = HashMap::with_capacity(Self::MAX_WAITING_PASSENGERS);
         let mut rng = rand::thread_rng();
 
-        for _ in 0..Self::MAX_WAITING_PASSENGERS {
-            let passenger = Passenger::random(&mut rng);
+        for _ in 0..count {
+            let passenger = Passenger::random(&mut rng, 0);
             waiting_passengers.insert(passenger.id, passenger);
         }
 
@@ -556,21 +634,22 @@ impl Grid {
         &self.traffic_lights[section]
     }
 
-    pub fn done(&self) -> bool {
-        self.waiting_passengers.is_empty()
-    }
-
-    pub fn tick(&mut self) {
-        start_of_tick(self);
-
-        if self.done() {
-            // finished
-            return;
-        }
+    pub fn tick(&mut self) -> f32 /* reward */ {
+        let tick_state = PyGridState::build(self);
+        self.tick_state = Some(tick_state);
 
         self.tick_traffic_lights();
         self.tick_cars();
         self.tick_passengers();
+
+        self.tick_state = None;
+        self.ticks_passed += 1;
+
+        let post_tick_state = PyGridState::build(self);
+        let reward = self.calculate_reward();
+        self.send_transition_results(post_tick_state, reward);
+
+        reward
     }
 
     fn tick_traffic_lights(&mut self) {
@@ -591,7 +670,7 @@ impl Grid {
         // where, while checking two cars don't want to move to the same place.
         // then we actually move them in phase 2.
 
-        // to make sure we don't lose cars
+        // to double check we don't lose cars
         let cars_count = self.cars.len();
 
         // list of before-and-after positions
@@ -611,6 +690,15 @@ impl Grid {
         let mut cars = std::mem::take(&mut self.cars);
 
         for car in &mut cars {
+            // delete all "pick up" commands (they are per-tick)
+            // if !car.props.agent.is_npc() {
+            //     println!("passengers before prune: {:?}", car.passengers);
+            // }
+            car.passengers.retain(|p| p.is_dropping_off());
+            // if !car.props.agent.is_npc() {
+            //     println!("passengers after prune: {:?}", car.passengers);
+            // }
+
             let old_position = car.position;
 
             // by default, the car stays still
@@ -638,21 +726,20 @@ impl Grid {
                 continue;
             }
 
-            // calculate the next position
-            let next_position = old_position.next();
+            // tick agent
+            // temporarily take agent out of car
+            let null_agent = Box::new(NullAgent {});
+            let mut agent = std::mem::replace(&mut car.props.agent, null_agent);
 
+            let decision = agent.get_turn(self, car);
+
+            car.props.agent = agent;
+
+            // calculate next position, using decision if needex
+            let next_position = old_position.next();
             let next_position = match next_position {
                 NextCarPosition::OnlyStraight(next) => next,
                 NextCarPosition::MustChoose(possible_decisions) => {
-                    // the car must choose where to turn
-
-                    // temporarily take agent out of car
-                    let null_agent = Box::new(NullAgent {});
-                    let mut agent = std::mem::replace(&mut car.props.agent, null_agent);
-
-                    let decision = agent.turn(self, car);
-
-                    car.props.agent = agent;
                     old_position.take_decision(decision)
                 }
             };
@@ -738,20 +825,34 @@ impl Grid {
         //     }
         // }
 
+        // spawn passengers
+        let mut rng = rand::thread_rng();
+        while rng.gen::<f32>() < self.opts.passenger_spawn_rate {
+            let passenger = Passenger::random(&mut rng, self.ticks_passed);
+            self.waiting_passengers.insert(passenger.id, passenger);
+        }
+
         // make cars pick up passengers
         for car in &mut self.cars {
+            // for every passenger in this car
             for passenger_in_vec in &mut car.passengers {
+                // if this passenger is a "reserved seat" i.e. a passenger towards
+                // whom the car is heading towards
                 let CarPassenger::PickingUp(passenger_id) = passenger_in_vec else {
-                    continue;
+                    continue; // if not, go next
                 };
+
                 let passenger = self
                     .waiting_passengers
                     .get(passenger_id)
                     .expect("Car is picking up passenger that doesn't exist");
 
+                // if the car is right now next to that passenger
                 if car.position == passenger.start {
-                    // car is next to passenger, make them enter the car
+                    // pick them up:
+                    // remove them from the sidewalk
                     let passenger = self.waiting_passengers.remove(passenger_id).unwrap();
+                    // put them into the car
                     *passenger_in_vec = CarPassenger::DroppingOff(passenger);
                 }
             }
@@ -768,6 +869,30 @@ impl Grid {
                 // => we retain the passenger
                 passenger.destination != car.position
             });
+        }
+    }
+
+    fn calculate_reward(&mut self) -> f32 {
+        let events = mem::take(&mut self.tick_events);
+        let mut reward = 0.0;
+
+        // -1 for every waiting passenger
+        reward -= self.waiting_passengers.len() as f32;
+
+        // +100 for every dropped off passenger
+        reward += events.passengers_dropped_off.len() as f32 * 100.0;
+
+        reward
+    }
+
+    fn send_transition_results(&self, new_state: PyGridState, reward: f32) {
+        for car in &self.cars {
+            let Some(py_agent) = car.props.agent.as_py_agent() else {
+                continue;
+            };
+
+            let new_state = new_state.with_pov(car);
+            py_agent.end_of_tick(new_state, reward);
         }
     }
 
@@ -793,6 +918,10 @@ impl Grid {
             .collect()
     }
 
+    fn spawn_passenger(&mut self, passenger: Passenger) {
+        self.waiting_passengers.insert(passenger.id, passenger);
+    }
+
     pub fn assign_car_to_passenger(&mut self, car: &mut Car, passenger: PassengerId) {
         let passenger = self
             .waiting_passengers
@@ -801,13 +930,21 @@ impl Grid {
         car.passengers.push(CarPassenger::PickingUp(passenger.id));
     }
 
-    pub fn get_passenger(&self, passenger: PassengerId) -> Option<&Passenger> {
+    pub fn get_idle_passenger(&self, passenger: PassengerId) -> Option<&Passenger> {
         self.waiting_passengers.get(&passenger)
+    }
+
+    pub fn py_state(&self, pov_car: &Car) -> PyGridState {
+        self.tick_state
+            .as_ref()
+            .expect("Grid::py_state() called outside of tick")
+            .with_pov(pov_car)
     }
 }
 
-impl Default for Grid {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// impl Default for Grid {
+//     fn default() -> Self {
+//         // Self::new()
+//         todo!()
+//     }
+// }
