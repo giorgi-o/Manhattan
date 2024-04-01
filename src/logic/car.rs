@@ -151,7 +151,7 @@ pub enum CarDecision {
 }
 
 // pub trait CarAgent: Send + Sync {
-pub trait CarAgent: Send {
+pub trait CarAgent: Send + std::fmt::Debug {
     fn get_turn(&mut self, grid: &mut Grid, car: &mut Car) -> CarDecision;
     fn as_path_agent(&self) -> Option<&dyn CarPathAgent> {
         None
@@ -164,7 +164,7 @@ pub trait CarAgent: Send {
         self.as_py_agent().is_none()
     }
 }
-pub trait CarPathAgent: CarAgent + std::fmt::Debug {
+pub trait CarPathAgent: CarAgent {
     // pick a destination, generate a path, and store it.
     // grid and car are &mut because passengers can move from
     // the grid to the car.
@@ -212,6 +212,7 @@ impl<T: CarPathAgent> CarAgent for T {
 }
 
 // temporary placeholder agent to put instead of the real agent
+#[derive(Debug)]
 pub struct NullAgent {}
 
 impl CarAgent for NullAgent {
@@ -220,6 +221,7 @@ impl CarAgent for NullAgent {
     }
 }
 
+#[derive(Debug)]
 pub struct RandomTurns {}
 
 impl CarAgent for RandomTurns {
@@ -344,8 +346,13 @@ impl PythonAgent {
 
     pub fn end_of_tick(&self, new_state: PyGridState, reward: f32) {
         let mut guard = self.half_transitions.lock().unwrap();
-        let Some((old_state, action)) = guard.take() else {
-            return; // first tick, car just spawned
+        // let Some((old_state, action)) = guard.take() else {
+        //     return; // first tick, car just spawned
+        // };
+
+        let (old_state, action) = match guard.take() {
+            Some((old_state, action)) => (Some(old_state), Some(action)),
+            None => (None, None), // first tick, car just spawned
         };
 
         self.python_wrapper

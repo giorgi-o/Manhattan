@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::logic::{
-    car::{Car, CarPassenger, CarPosition},
+    car::{Car, CarPassenger, CarPosition, NextCarPosition},
     grid::{Direction, Grid, GridOpts, RoadSection},
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
@@ -21,7 +21,10 @@ pub struct PyGridState {
     #[pyo3(get)]
     pov_car: Option<PyCar>,
     #[pyo3(get)]
-    cars: Vec<PyCar>,
+    can_turn: Option<bool>, // whether the car can choose this tick
+
+    #[pyo3(get)]
+    other_cars: Vec<PyCar>,
     #[pyo3(get)]
     idle_passengers: Vec<PyPassenger>,
 
@@ -33,7 +36,7 @@ impl PyGridState {
     fn __repr__(&self) -> String {
         format!(
             "<PyGridState cars={} passengers={} ticks_passed={}>",
-            self.cars.len(),
+            self.other_cars.len(),
             self.idle_passengers.len(),
             self.ticks_passed
         )
@@ -127,7 +130,9 @@ impl PyGridState {
             height: Grid::HORIZONTAL_ROADS,
 
             pov_car: None,
-            cars,
+            can_turn: None,
+
+            other_cars: cars,
             idle_passengers,
 
             ticks_passed,
@@ -138,6 +143,11 @@ impl PyGridState {
         let mut this = self.clone();
         this.pov_car = Some(PyCar::build(pov_car, self.ticks_passed));
 
+        // calculate whether the car's action this tick has an effect
+        let next_position = pov_car.position.next();
+        let can_turn = matches!(next_position, NextCarPosition::MustChoose(_));
+        this.can_turn = Some(can_turn);
+
         // sort passengers by closest to car
         this.idle_passengers.sort_by_cached_key(|passenger| {
             let path = Path::find(pov_car.position, passenger.pos.into(), Grid::CAR_SPEED);
@@ -145,10 +155,11 @@ impl PyGridState {
         });
 
         // do not include the pov car in cars list
-        this.cars.retain(|car| pov_car.position != car.pos.into());
+        this.other_cars
+            .retain(|car| pov_car.position != car.pos.into());
 
         // sort cars by closest to pov car
-        this.cars.sort_by_cached_key(|car| {
+        this.other_cars.sort_by_cached_key(|car| {
             Path::distance(pov_car.position, car.pos.into(), Grid::CAR_SPEED);
         });
 

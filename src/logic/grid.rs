@@ -533,7 +533,9 @@ impl Grid {
     // pub const MAX_WAITING_PASSENGERS: usize = Self::MAX_TOTAL_PASSENGERS / 2;
     pub const MAX_WAITING_PASSENGERS: usize = 20;
 
-    pub fn new(opts: GridOpts, python_agent: PythonAgentWrapper) -> Self {
+    pub fn new(opts: GridOpts, python_agents: Vec<PythonAgentWrapper>) -> Self {
+        assert_eq!(opts.agent_car_count, python_agents.len() as u32);
+
         // assign a traffic light to every road
         let traffic_lights = Self::generate_traffic_lights();
         let waiting_passengers = Self::generate_passengers(opts.initial_passenger_count);
@@ -574,12 +576,13 @@ impl Grid {
         }
 
         // spawn required agent cars
+        let mut python_agents = python_agents.into_iter();
         for _ in 0..opts.agent_car_count {
             // let agent = PythonAgent::new();
             // let car = CarProps::new(agent, 3);
             // this.add_car(car);
 
-            let python_agent = PythonAgent::new(python_agent.clone());
+            let python_agent = PythonAgent::new(python_agents.next().unwrap());
             let agent_props = CarProps::new(python_agent, Self::CAR_SPEED, RED);
             this.add_car(agent_props, None);
         }
@@ -705,6 +708,13 @@ impl Grid {
             assert!(!next_positions.contains(&old_position));
             next_positions.insert(old_position);
 
+            // tick agent
+            // temporarily take agent out of car
+            let null_agent = Box::new(NullAgent {});
+            let mut agent = std::mem::replace(&mut car.props.agent, null_agent);
+            let decision = agent.get_turn(self, car);
+            car.props.agent = agent;
+
             // if the car is at a red light, sit still
             if car.position.position_in_section
                 == car
@@ -725,15 +735,6 @@ impl Grid {
                 car.ticks_since_last_movement += 1;
                 continue;
             }
-
-            // tick agent
-            // temporarily take agent out of car
-            let null_agent = Box::new(NullAgent {});
-            let mut agent = std::mem::replace(&mut car.props.agent, null_agent);
-
-            let decision = agent.get_turn(self, car);
-
-            car.props.agent = agent;
 
             // calculate next position, using decision if needex
             let next_position = old_position.next();

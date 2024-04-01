@@ -2,6 +2,10 @@ print("Importing main.py v2")
 
 import time
 
+from stable_baselines3 import A2C
+
+from env import GridVecEnv, EnvOpts
+
 
 def start(rust):
     GridEnv = rust.PyGridEnv
@@ -9,34 +13,45 @@ def start(rust):
     Action = rust.PyAction
     Direction = rust.Direction
 
-    opts = GridOpts(
+    grid_opts = GridOpts(
         initial_passenger_count=10,
         passenger_spawn_rate=0.1,
         agent_car_count=2,
         npc_car_count=15,
     )
+    env_opts = EnvOpts(
+        passenger_radius=10,
+        car_radius=10,
+        passengers_per_car=4,
+        render=True,
+    )
 
-    class CarAgent:
-        def get_action(self, state):
-            pov_car = state.pov_car
+    env = GridVecEnv(rust, grid_opts, env_opts)
+    model = A2C("MlpPolicy", env, verbose=1)
 
-            if len(pov_car.passengers) > 0:
-                passenger = pov_car.passengers[0]
-                return Action.drop_off_passenger(passenger, None)
+    model.learn(total_timesteps=25000)
 
-            if len(state.idle_passengers) > 0:
-                closest_passenger = state.idle_passengers[0]
-                return Action.pick_up_passenger(closest_passenger, None)
+    # class CarAgent:
+    #     def get_action(self, state):
+    #         pov_car = state.pov_car
 
-            return Action.head_towards(Direction.Up)
+    #         if len(pov_car.passengers) > 0:
+    #             passenger = pov_car.passengers[0]
+    #             return Action.drop_off_passenger(passenger, None)
 
-        def transition_happened(self, state, action, new_state, reward):
-            print(f"transition_happened: {state=}, {action=}, {new_state=}, {reward=}")
+    #         if len(state.idle_passengers) > 0:
+    #             closest_passenger = state.idle_passengers[0]
+    #             return Action.pick_up_passenger(closest_passenger, None)
 
-    agent = CarAgent()
-    env = GridEnv(agent, opts, render=True)
+    #         return Action.head_towards(Direction.Up)
 
-    while True:
-        env.tick()
+    #     def transition_happened(self, state, action, new_state, reward):
+    #         print(f"transition_happened: {state=}, {action=}, {new_state=}, {reward=}")
 
-        time.sleep(0.01)
+    # agent = CarAgent()
+    # env = GridEnv(agent, opts, render=True)
+
+    # while True:
+    #     env.tick()
+
+    #     time.sleep(0.01)

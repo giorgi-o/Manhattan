@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
-use pyo3::prelude::*;
+use pyo3::{prelude::*, types::PyList};
 
 use crate::{
     logic::{
@@ -13,7 +13,7 @@ use crate::{
 
 use super::{
     err_handling::UnwrapPyErr,
-    py_grid::{PyCar, PyGridState, PyPassenger},
+    py_grid::{PyCar, PyCarType, PyGridState, PyPassenger},
 };
 
 static MAIN_MODULE: OnceLock<Py<PyAny>> = OnceLock::new();
@@ -67,6 +67,11 @@ pub fn start_python() {
     }
 }
 
+#[pyfunction]
+fn grid_dimensions() -> (usize, usize) {
+    (Grid::VERTICAL_ROADS, Grid::HORIZONTAL_ROADS)
+}
+
 fn exported_python_module(py: Python<'_>) -> PyResult<&PyModule> {
     let module = PyModule::new(py, "rust")?;
 
@@ -74,6 +79,9 @@ fn exported_python_module(py: Python<'_>) -> PyResult<&PyModule> {
     module.add_class::<GridOpts>()?;
     module.add_class::<PyAction>()?;
     module.add_class::<Direction>()?;
+    module.add_class::<PyCarType>()?;
+
+    module.add_function(wrap_pyfunction!(grid_dimensions, module)?)?;
 
     Ok(module)
 }
@@ -86,9 +94,18 @@ pub struct PyGridEnv {
 #[pymethods]
 impl PyGridEnv {
     #[new]
-    fn py_new(python_agent: PyObject, opts: GridOpts, render: bool) -> Self {
-        let agent = PythonAgentWrapper::new(python_agent);
-        let grid = Grid::new(opts, agent);
+    fn py_new(python_agents: Py<PyList>, opts: GridOpts, render: bool) -> Self {
+        // let agent = PythonAgentWrapper::new(python_agent);
+        let mut agents = vec![];
+        Python::with_gil(|py| {
+            let python_agents = python_agents.as_ref(py);
+            for agent_obj in python_agents.iter() {
+                let agent = PythonAgentWrapper::new(agent_obj.to_object(py));
+                agents.push(agent);
+            }
+        });
+
+        let grid = Grid::new(opts, agents);
 
         let mutex = Arc::new(Mutex::new(grid));
         let grid_ref = GridRef { mutex };
@@ -137,19 +154,17 @@ impl PythonAgentWrapper {
 
     pub fn transition_happened(
         &self,
-        state: PyGridState,
-        action: PyAction,
+        state: Option<PyGridState>,
+        action: Option<PyAction>,
         new_state: PyGridState,
         reward: f32,
     ) {
         Python::with_gil(|py| {
             let obj = self.py_obj.as_ref(py);
+            let action = action.map(|a| a.raw);
 
-            obj.call_method1(
-                "transition_happened",
-                (state, action.raw, new_state, reward),
-            )
-            .unwrap();
+            obj.call_method1("transition_happened", (state, action, new_state, reward))
+                .unwrap();
         });
     }
 }
