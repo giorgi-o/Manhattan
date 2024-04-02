@@ -2,12 +2,15 @@ print("Importing main.py v2")
 
 import time
 
+import debugpy
 from stable_baselines3 import A2C
 
 from env import GridVecEnv, EnvOpts
 
 
 def start(rust):
+    start_debug()
+
     GridEnv = rust.PyGridEnv
     GridOpts = rust.GridOpts
     Action = rust.PyAction
@@ -23,11 +26,11 @@ def start(rust):
         passenger_radius=10,
         car_radius=10,
         passengers_per_car=4,
-        render=True,
+        render=False,
     )
 
     env = GridVecEnv(rust, grid_opts, env_opts)
-    model = A2C("MlpPolicy", env, verbose=1)
+    model = A2C("MultiInputPolicy", env, verbose=1)
 
     model.learn(total_timesteps=25000)
 
@@ -55,3 +58,12 @@ def start(rust):
     #     env.tick()
 
     #     time.sleep(0.01)
+
+
+def start_debug():
+    debugpy.listen(("0.0.0.0", 5678), in_process_debug_adapter=True)
+    print(f"Waiting for debugger on port 5678...")
+    debugpy.debug_this_thread()
+    debugpy.wait_for_client()
+    print("Attached!")
+    # debugpy.breakpoint()

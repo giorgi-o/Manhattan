@@ -1,6 +1,6 @@
 import random
 from dataclasses import dataclass
-from typing import NewType, Any
+from typing import NewType, Any, TypeVar
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -49,7 +49,7 @@ class GridVecEnv(VecEnv):
         self.reset()
         self.env: GridEnv
 
-    def step(self, actions: np.ndarray) -> tuple[tuple[np.ndarray, ...], np.ndarray, np.ndarray, list[dict]]:
+    def step(self, actions: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict]]:
         transitions: list[tuple | None] = [None] * self.num_envs
 
         for i in range(self.num_envs):
@@ -61,7 +61,7 @@ class GridVecEnv(VecEnv):
 
         self.env.tick()
 
-        observations = []
+        observations: list[np.ndarray] = []
         rewards = []
         done = np.array([False] * self.num_envs)
         information = [{}] * self.num_envs
@@ -70,7 +70,8 @@ class GridVecEnv(VecEnv):
             assert transition is not None
             old_state, action, new_state, reward = transition
 
-            observations.append(new_state)
+            observation = self._parse_observation(new_state)
+            observations.append(observation)
             rewards.append(reward)
 
         return tuple(observations), np.array(rewards), done, information
@@ -113,51 +114,89 @@ class GridVecEnv(VecEnv):
         raise NotImplementedError
 
     def _observation_space(self) -> gym.Space:
-        direction_spc = spaces.Discrete(4)  # N/S/E/W
-        coords_ospc = spaces.Dict(
-            {
-                "x": spaces.Discrete(self.width),
-                "y": spaces.Discrete(self.height),
-                "direction": direction_spc,
-            }
+        # coords_ospc = spaces.Dict(
+        #     {
+        #         "x": spaces.Discrete(self.width),
+        #         "y": spaces.Discrete(self.height),
+        #         "direction": direction_spc,
+        #     }
+        # )
+        coords_ospc = (
+            spaces.Discrete(self.width),  # x
+            spaces.Discrete(self.height),  # y
+            spaces.Discrete(4)  # N/S/E/W direction
         )
 
-        car_passenger_ospc = spaces.Dict(
-            {
-                "present": spaces.Discrete(2),
-                "destination": coords_ospc,
-                "distance_to_dest": spaces.Discrete(100),
-                "time_since_request": spaces.Discrete(300),
-            }
+        # car_passenger_ospc = spaces.Dict(
+        #     {
+        #         "present": spaces.Discrete(2),
+        #         "destination": coords_ospc,
+        #         "distance_to_dest": spaces.Discrete(100),
+        #         "time_since_request": spaces.Discrete(300),
+        #     }
+        # )
+        car_passenger_ospc = (
+            spaces.Discrete(2),  # present
+            *coords_ospc,  # destination
+            spaces.Discrete(100),  # distance_to_dest
+            spaces.Discrete(300),  # time_since_request
         )
-        car_passengers_ospc = spaces.Tuple((car_passenger_ospc,) * self.passengers_per_car)
+        # car_passengers_ospc = spaces.Tuple((car_passenger_ospc,) * self.passengers_per_car)
+        # car_passengers_ospc = [car_passenger_ospc for _ in range(self.passengers_per_car)]
+        car_passengers_ospc: list[spaces.Discrete] = []
+        for _ in range(self.passengers_per_car):
+            car_passengers_ospc.extend(car_passenger_ospc)
 
-        idle_passenger_ospc = spaces.Dict(
-            {
-                "present": spaces.Discrete(2),
-                "pos": coords_ospc,
-                "destination": coords_ospc,
-                "distance_to_dest": spaces.Discrete(100),
-                "time_since_request": spaces.Discrete(300),
-            }
+        # idle_passenger_ospc = spaces.Dict(
+        #     {
+        #         "present": spaces.Discrete(2),
+        #         "pos": coords_ospc,
+        #         "destination": coords_ospc,
+        #         "distance_to_dest": spaces.Discrete(100),
+        #         "time_since_request": spaces.Discrete(300),
+        #     }
+        # )
+        idle_passenger_ospc = (
+            spaces.Discrete(2),  # present
+            *coords_ospc,  # pos
+            *coords_ospc,  # destination
+            spaces.Discrete(100),  # distance_to_dest
+            spaces.Discrete(300),  # time_since_request
         )
-        idle_passengers_ospc = spaces.Tuple((idle_passenger_ospc,) * self.passenger_radius)
+        # idle_passengers_ospc = spaces.Tuple((idle_passenger_ospc,) * self.passenger_radius)
+        # idle_passengers_ospc = [idle_passenger_ospc for _ in range(self.passenger_radius)]
+        idle_passengers_ospc: list[spaces.Discrete] = []
+        for _ in range(self.passenger_radius):
+            idle_passengers_ospc.extend(idle_passenger_ospc)
 
-        car_ospc = spaces.Dict(
-            {
-                "pos": coords_ospc,  # pos
-                "passengers": car_passengers_ospc,
-            }
+        # car_ospc = spaces.Dict(
+        #     {
+        #         "pos": coords_ospc,  # pos
+        #         "passengers": car_passengers_ospc,
+        #     }
+        # )
+        car_ospc = (
+            *coords_ospc,  # pos
+            *car_passengers_ospc,  # passengers
         )
-        cars_ospc = spaces.Tuple((car_ospc,) * (self.car_radius))
+        # cars_ospc = spaces.Tuple((car_ospc,) * (self.car_radius))
+        # cars_ospc = [car_ospc for _ in range(self.car_radius)]
+        cars_ospc: list[spaces.Discrete] = []
+        for _ in range(self.car_radius):
+            cars_ospc.extend(car_ospc)
 
-        return spaces.Dict(
-            {
-                "pov_car": car_ospc,
-                "other_cars": cars_ospc,
-                "idle_passengers": idle_passengers_ospc,
-            }
-        )
+        # return spaces.Dict(
+        #     {
+        #         "pov_car": car_ospc,
+        #         "other_cars": cars_ospc,
+        #         "idle_passengers": idle_passengers_ospc,
+        #     }
+        # )
+
+        # return spaces.Tuple([*car_ospc, *cars_ospc, *idle_passengers_ospc])
+        all_spaces = [*car_ospc, *cars_ospc, *idle_passengers_ospc]
+        # return spaces.Dict({str(i): all_spaces[i] for i in range(len(all_spaces))})
+        return spaces.Tuple(all_spaces)
 
     def _action_space(self) -> gym.Space:
         # can pick passenger to drop off, pick up, or to head N/S/E/W
@@ -166,85 +205,124 @@ class GridVecEnv(VecEnv):
 
     def _parse_direction(self, direction) -> int:
         Direction = self.rust.Direction
-        return {Direction.Up: 0, Direction.Right: 1, Direction.Down: 2, Direction.Left: 3}[direction]
+        match direction:
+            case Direction.Up:
+                return 0
+            case Direction.Right:
+                return 1
+            case Direction.Down:
+                return 2
+            case Direction.Left:
+                return 3
+            case _:
+                raise ValueError(f"Invalid direction: {direction}")
 
-    def _parse_coords(self, coords) -> dict[str, int]:
+    def _parse_coords(self, coords) -> list[int]:
         Direction = self.rust.Direction
 
         horizontal = coords.direction in [Direction.Right, Direction.Left]
         if horizontal:
-            parsed_coords = {"x": coords.section, "y": coords.road}
+            x, y = (coords.section, coords.road)
         else:
-            parsed_coords = {"x": coords.road, "y": coords.section}
+            x, y = (coords.road, coords.section)
+        assert x < self.width and y < self.height
 
-        parsed_coords["direction"] = self._parse_direction(coords.direction)
-        return parsed_coords
+        direction = self._parse_direction(coords.direction)
+        return [x, y, direction]
 
-    def _null_coords(self) -> dict[str, int]:
-        return {"x": 0, "y": 0, "direction": 0}
+    def _null_coords(self) -> list[int]:
+        return [0, 0, 0]
+    
+    def _null_passenger(self) -> list[int]:
+        return [
+            0,  # present
+            *self._null_coords(),  # destination
+            0,  # distance_to_dest
+            0,  # time_since_request
+        ]
 
-    def _parse_car_passengers(self, car):
+    def _parse_car_passengers(self, car) -> list[int]:
         passengers = []
 
         for passenger in car.passengers:
-            passengers.append(
-                {
-                    "present": 1,
-                    "destination": self._parse_coords(passenger.destination),
-                    "distance_to_dest": passenger.distance_to_destination,
-                    "time_since_request": passenger.ticks_since_request,
-                }
-            )
+            # passengers.append(
+            #     {
+            #         "present": 1,
+            #         "destination": self._parse_coords(passenger.destination),
+            #         "distance_to_dest": passenger.distance_to_destination,
+            #         "time_since_request": passenger.ticks_since_request,
+            #     }
+            # )
+            parsed_passenger = [
+                1,  # present
+                *self._parse_coords(passenger.destination),  # destination
+                passenger.distance_to_destination,  # distance_to_dest
+                passenger.ticks_since_request,  # time_since_request
+            ]
+            passengers.append(parsed_passenger)
 
+        null_passenger = self._null_passenger()
         while len(passengers) < self.passengers_per_car:
-            passengers.append(
-                {
-                    "present": 0,
-                    "destination": self._null_coords(),
-                    "distance_to_dest": 0,
-                    "time_since_request": 0,
-                }
-            )
+            passengers.append(null_passenger)
 
-        return tuple(passengers)
+        # return flattened passengers
+        return [item for sublist in passengers for item in sublist]
 
-    def _parse_idle_passengers(self, idle_passengers):
+    def _parse_idle_passengers(self, idle_passengers) -> list[int]:
         parsed_idle_passengers = []
 
         for passenger in idle_passengers:
-            parsed_idle_passengers.append(
-                {
-                    "present": 1,
-                    "pos": self._parse_coords(passenger.pos),
-                    "destination": self._parse_coords(passenger.destination),
-                    "distance_to_dest": passenger.distance_to_destination,
-                    "time_since_request": passenger.ticks_since_request,
-                }
-            )
+            # parsed_idle_passengers.append(
+            #     {
+            #         "present": 1,
+            #         "pos": self._parse_coords(passenger.pos),
+            #         "destination": self._parse_coords(passenger.destination),
+            #         "distance_to_dest": passenger.distance_to_destination,
+            #         "time_since_request": passenger.ticks_since_request,
+            #     }
+            # )
+            parsed_idle_passenger = [
+                1,  # present
+                *self._parse_coords(passenger.pos),  # pos
+                *self._parse_coords(passenger.destination),  # destination
+                passenger.distance_to_destination,  # distance_to_dest
+                passenger.ticks_since_request,  # time_since_request
+            ]
+            parsed_idle_passengers.append(parsed_idle_passenger)
 
             if len(idle_passengers) == self.passenger_radius:
                 break
 
+        null_idle_passenger = [
+            0,  # present
+            *self._null_coords(),  # pos
+            *self._null_coords(),  # destination
+            0,  # distance_to_dest
+            0,  # time_since_request
+        ]
         while len(parsed_idle_passengers) < self.passenger_radius:
-            parsed_idle_passengers.append(
-                {
-                    "present": 0,
-                    "pos": self._null_coords(),
-                    "destination": self._null_coords(),
-                    "distance_to_dest": 0,
-                    "time_since_request": 0,
-                }
-            )
+            parsed_idle_passengers.append(null_idle_passenger)
 
-        return tuple(parsed_idle_passengers)
+        return flatten(parsed_idle_passengers)
 
-    def _parse_car(self, car):
-        return {
-            "pos": self._parse_coords(car.position),
-            "passengers": self._parse_car_passengers(car),
-        }
+    def _parse_car(self, car) -> list[int]:
+        # return {
+        #     "pos": self._parse_coords(car.position),
+        #     "passengers": self._parse_car_passengers(car),
+        # }
+        return [
+            *self._parse_coords(car.pos),  # pos
+            *self._parse_car_passengers(car),
+        ]
+    
+    def _null_car(self) -> list[int]:
+        passengers = [self._null_passenger()] * self.passengers_per_car
+        return [
+            *self._null_coords(),  # pos
+            *flatten(passengers),
+        ]
 
-    def _parse_cars(self, cars):
+    def _parse_cars(self, cars) -> list[int]:
         cars = []
 
         for car in cars:
@@ -256,15 +334,28 @@ class GridVecEnv(VecEnv):
             if len(cars) == self.car_radius:
                 break
 
-        return tuple(cars)
+        null_car = self._null_car()
+        while len(cars) < self.car_radius:
+            cars.append(null_car)
 
-    def _parse_observation(self, state):
-        obs = {
-            "pov_car": self._parse_car(state.pov_car),
-            "other_cars": self._parse_cars(state.other_cars),
-            "idle_passengers": self._parse_idle_passengers(state.idle_passengers),
-        }
+        return flatten(cars)
 
+    def _parse_observation(self, state) -> dict[str, int]:
+        # obs = {
+        #     "pov_car": self._parse_car(state.pov_car),
+        #     "other_cars": self._parse_cars(state.other_cars),
+        #     "idle_passengers": self._parse_idle_passengers(state.idle_passengers),
+        # }
+        obs_list = [
+            *self._parse_car(state.pov_car),  # pov_car
+            *self._parse_cars(state.other_cars),  # other_cars
+            *self._parse_idle_passengers(state.idle_passengers),  # idle_passengers
+        ]
+
+        # obs = {str(x): y for x, y in enumerate(obs_list)}
+        obs = tuple(obs_list)
+
+        # debug()
         assert self.observation_space.contains(obs)
         return obs
 
@@ -335,3 +426,21 @@ class CarCallback:
 
         self.transitions_arr = None
         self.transitions_idx = None
+
+
+T = TypeVar("T")
+
+
+def flatten(x: list[list[T]]) -> list[T]:
+    return [item for sublist in x for item in sublist]
+
+
+def debug():
+    import debugpy
+
+    debugpy.listen(("0.0.0.0", 5678), in_process_debug_adapter=True)
+    print(f"Waiting for debugger on port 5678...")
+    debugpy.debug_this_thread()
+    debugpy.wait_for_client()
+    print("Attached!")
+    debugpy.breakpoint()
