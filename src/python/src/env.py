@@ -39,6 +39,9 @@ class GridVecEnv(VecEnv):
         self.width, self.height = rust.grid_dimensions()
 
         self.render_mode = None  # we handle rendering ourselves
+        self.TICKS_PER_EPISODE = 2000
+        self.MAX_DISTANCE = 100
+        self.MAX_TIME = 300
 
         num_envs = grid_opts.agent_car_count
         observation_space = self._observation_space()
@@ -61,28 +64,46 @@ class GridVecEnv(VecEnv):
 
         self.env.tick()
 
-        observations: list[np.ndarray] = []
-        rewards = []
-        done = np.array([False] * self.num_envs)
-        information = [{}] * self.num_envs
+        obs_shape = self.observation_space.shape
+        assert obs_shape is not None
 
-        for transition in transitions:
+        observations = np.zeros((self.num_envs, *obs_shape))
+        rewards = np.zeros(self.num_envs, dtype=np.float32)
+        dones = np.zeros(self.num_envs, dtype=bool)
+        infos = [{}] * self.num_envs
+
+        print("Rewards:", end=" ")
+        
+        for i, transition in enumerate(transitions):
             assert transition is not None
-            old_state, action, new_state, reward = transition
+            old_state, action_valid, new_state = transition
+            reward = self._calculate_reward(new_state, action_valid)
 
             observation = self._parse_observation(new_state)
-            observations.append(observation)
-            rewards.append(reward)
+            observations[i] = observation
+            rewards[i] = reward
 
-        return tuple(observations), np.array(rewards), done, information
+            truncate = new_state.ticks_passed >= self.TICKS_PER_EPISODE
+            if truncate:
+                dones[i] = True
+                infos[i]["terminal_observation"] = observation
+                infos[i]["TimeLimit.truncated"] = True
 
-    def reset(self) -> tuple[np.ndarray, ...]:
+        print()
+
+        # need to auto-reset the env once truncated
+        if np.any(dones):
+            observations = self.reset()
+
+        return np.array(observations), rewards, dones, infos
+
+    def reset(self) -> np.ndarray:
         self.env = self.rust.PyGridEnv(self.callbacks, self.grid_opts, self.env_opts.render)
 
         Dir = self.rust.Direction
         random_direction = lambda: random.choice([Dir.Up, Dir.Down, Dir.Left, Dir.Right])
 
-        head_towards = lambda d: self.rust.PyAction.head_towards(d, raw=None)
+        head_towards = lambda d: self.rust.PyAction.head_towards(d)
         actions = np.array([head_towards(random_direction()) for _ in range(self.num_envs)])
 
         observations, _, _, _ = self.step(actions)
@@ -113,6 +134,39 @@ class GridVecEnv(VecEnv):
     def env_is_wrapped(self, wrapper_class: type, indices=None) -> list[bool]:
         raise NotImplementedError
 
+    def _calculate_reward(self, state: GridState, action_valid: bool) -> float:
+        pov_car = state.pov_car
+        reward = 0.0
+
+        # -1 for every passenger on the grid
+        reward -= len(state.idle_passengers)
+
+        # +100 for every passenger dropped off
+        reward += 100 * len(state.events.car_dropped_off_passenger)
+
+        # +10 for every passenger picked up
+        reward += 10 * len(state.events.car_picked_up_passenger)
+
+        # -100 if the action is invalid
+        if not action_valid:
+            reward -= 100
+        elif len(pov_car.recent_actions) > 0:
+            action = pov_car.recent_actions[0]
+
+            # -1 if action is head_towards
+            if action.is_head_towards():
+                reward -= 1
+
+            # +3 for every consecutive time the agent picked this action
+            for prev_action in pov_car.recent_actions[1:]:
+                if prev_action == action:
+                    reward += 3
+                else:
+                    break
+
+        print(f"{reward}", end=" ")
+        return reward
+
     def _observation_space(self) -> gym.Space:
         # coords_ospc = spaces.Dict(
         #     {
@@ -121,11 +175,16 @@ class GridVecEnv(VecEnv):
         #         "direction": direction_spc,
         #     }
         # )
-        coords_ospc = (
-            spaces.Discrete(self.width),  # x
-            spaces.Discrete(self.height),  # y
-            spaces.Discrete(4)  # N/S/E/W direction
-        )
+        # coords_ospc = (
+        #     spaces.Discrete(self.width),  # x
+        #     spaces.Discrete(self.height),  # y
+        #     spaces.Discrete(4)  # N/S/E/W direction
+        # )
+        coords_ospc = [
+            self.width,  # x
+            self.height,  # y
+            4,  # N/S/E/W direction
+        ]
 
         # car_passenger_ospc = spaces.Dict(
         #     {
@@ -135,15 +194,21 @@ class GridVecEnv(VecEnv):
         #         "time_since_request": spaces.Discrete(300),
         #     }
         # )
-        car_passenger_ospc = (
-            spaces.Discrete(2),  # present
+        # car_passenger_ospc = (
+        #     spaces.Discrete(2),  # present
+        #     *coords_ospc,  # destination
+        #     spaces.Discrete(100),  # distance_to_dest
+        #     spaces.Discrete(300),  # time_since_request
+        # )
+        car_passenger_ospc = [
+            2,  # present
             *coords_ospc,  # destination
-            spaces.Discrete(100),  # distance_to_dest
-            spaces.Discrete(300),  # time_since_request
-        )
+            self.MAX_DISTANCE + 1,  # distance_to_dest
+            self.MAX_TIME + 1,  # time_since_request
+        ]
         # car_passengers_ospc = spaces.Tuple((car_passenger_ospc,) * self.passengers_per_car)
         # car_passengers_ospc = [car_passenger_ospc for _ in range(self.passengers_per_car)]
-        car_passengers_ospc: list[spaces.Discrete] = []
+        car_passengers_ospc: list[int] = []
         for _ in range(self.passengers_per_car):
             car_passengers_ospc.extend(car_passenger_ospc)
 
@@ -156,16 +221,23 @@ class GridVecEnv(VecEnv):
         #         "time_since_request": spaces.Discrete(300),
         #     }
         # )
-        idle_passenger_ospc = (
-            spaces.Discrete(2),  # present
+        # idle_passenger_ospc = (
+        #     spaces.Discrete(2),  # present
+        #     *coords_ospc,  # pos
+        #     *coords_ospc,  # destination
+        #     spaces.Discrete(100),  # distance_to_dest
+        #     spaces.Discrete(300),  # time_since_request
+        # )
+        idle_passenger_ospc = [
+            2,  # present
             *coords_ospc,  # pos
             *coords_ospc,  # destination
-            spaces.Discrete(100),  # distance_to_dest
-            spaces.Discrete(300),  # time_since_request
-        )
+            self.MAX_DISTANCE + 1,  # distance_to_dest
+            self.MAX_TIME + 1,  # time_since_request
+        ]
         # idle_passengers_ospc = spaces.Tuple((idle_passenger_ospc,) * self.passenger_radius)
         # idle_passengers_ospc = [idle_passenger_ospc for _ in range(self.passenger_radius)]
-        idle_passengers_ospc: list[spaces.Discrete] = []
+        idle_passengers_ospc: list[int] = []
         for _ in range(self.passenger_radius):
             idle_passengers_ospc.extend(idle_passenger_ospc)
 
@@ -175,13 +247,17 @@ class GridVecEnv(VecEnv):
         #         "passengers": car_passengers_ospc,
         #     }
         # )
-        car_ospc = (
+        # car_ospc = (
+        #     *coords_ospc,  # pos
+        #     *car_passengers_ospc,  # passengers
+        # )
+        car_ospc = [
             *coords_ospc,  # pos
             *car_passengers_ospc,  # passengers
-        )
+        ]
         # cars_ospc = spaces.Tuple((car_ospc,) * (self.car_radius))
         # cars_ospc = [car_ospc for _ in range(self.car_radius)]
-        cars_ospc: list[spaces.Discrete] = []
+        cars_ospc: list[int] = []
         for _ in range(self.car_radius):
             cars_ospc.extend(car_ospc)
 
@@ -193,10 +269,12 @@ class GridVecEnv(VecEnv):
         #     }
         # )
 
+        can_turn_spc = [2]  # whether the car's action this tick has an effect
+
         # return spaces.Tuple([*car_ospc, *cars_ospc, *idle_passengers_ospc])
-        all_spaces = [*car_ospc, *cars_ospc, *idle_passengers_ospc]
+        all_spaces = [*can_turn_spc, *car_ospc, *cars_ospc, *idle_passengers_ospc]
         # return spaces.Dict({str(i): all_spaces[i] for i in range(len(all_spaces))})
-        return spaces.Tuple(all_spaces)
+        return spaces.MultiDiscrete(all_spaces)
 
     def _action_space(self) -> gym.Space:
         # can pick passenger to drop off, pick up, or to head N/S/E/W
@@ -232,7 +310,7 @@ class GridVecEnv(VecEnv):
 
     def _null_coords(self) -> list[int]:
         return [0, 0, 0]
-    
+
     def _null_passenger(self) -> list[int]:
         return [
             0,  # present
@@ -256,10 +334,13 @@ class GridVecEnv(VecEnv):
             parsed_passenger = [
                 1,  # present
                 *self._parse_coords(passenger.destination),  # destination
-                passenger.distance_to_destination,  # distance_to_dest
-                passenger.ticks_since_request,  # time_since_request
+                min(passenger.distance_to_destination, self.MAX_DISTANCE),  # distance_to_dest
+                min(passenger.ticks_since_request, self.MAX_TIME),  # time_since_request
             ]
             passengers.append(parsed_passenger)
+
+            if len(passengers) == self.passengers_per_car:
+                break
 
         null_passenger = self._null_passenger()
         while len(passengers) < self.passengers_per_car:
@@ -285,12 +366,12 @@ class GridVecEnv(VecEnv):
                 1,  # present
                 *self._parse_coords(passenger.pos),  # pos
                 *self._parse_coords(passenger.destination),  # destination
-                passenger.distance_to_destination,  # distance_to_dest
-                passenger.ticks_since_request,  # time_since_request
+                min(passenger.distance_to_destination, self.MAX_DISTANCE),  # distance_to_dest
+                min(passenger.ticks_since_request, self.MAX_TIME),  # time_since_request
             ]
             parsed_idle_passengers.append(parsed_idle_passenger)
 
-            if len(idle_passengers) == self.passenger_radius:
+            if len(parsed_idle_passengers) == self.passenger_radius:
                 break
 
         null_idle_passenger = [
@@ -314,7 +395,7 @@ class GridVecEnv(VecEnv):
             *self._parse_coords(car.pos),  # pos
             *self._parse_car_passengers(car),
         ]
-    
+
     def _null_car(self) -> list[int]:
         passengers = [self._null_passenger()] * self.passengers_per_car
         return [
@@ -340,47 +421,46 @@ class GridVecEnv(VecEnv):
 
         return flatten(cars)
 
-    def _parse_observation(self, state) -> dict[str, int]:
+    def _parse_observation(self, state) -> np.ndarray:
+        can_turn = 1 if state.can_turn else 0
+
         # obs = {
         #     "pov_car": self._parse_car(state.pov_car),
         #     "other_cars": self._parse_cars(state.other_cars),
         #     "idle_passengers": self._parse_idle_passengers(state.idle_passengers),
         # }
         obs_list = [
+            can_turn,
             *self._parse_car(state.pov_car),  # pov_car
             *self._parse_cars(state.other_cars),  # other_cars
             *self._parse_idle_passengers(state.idle_passengers),  # idle_passengers
         ]
 
         # obs = {str(x): y for x, y in enumerate(obs_list)}
-        obs = tuple(obs_list)
+        obs = np.array(obs_list)
 
         # debug()
         assert self.observation_space.contains(obs)
         return obs
 
-    def _parse_action(self, state: GridState, action: int):
+    def _parse_action(self, state: GridState, action: int) -> tuple[Any, bool]:
         Action = self.rust.PyAction
         Direction = self.rust.Direction
-        invalid_action = False
+        parsed_action = None
 
         if action < self.passengers_per_car:
             # pick up passenger with that index
             idx = action
             if idx < len(state.pov_car.passengers):
-                return Action.drop_off_passenger(
+                parsed_action = Action.drop_off_passenger(
                     state.pov_car.passengers[idx],
                 )
-            else:
-                invalid_action = True
 
         elif action < self.action_count - 4:
             # drop off passenger
             idx = action - self.passengers_per_car
             if idx < len(state.idle_passengers):
-                return Action.pick_up_passenger(state.idle_passengers[idx])
-            else:
-                invalid_action = True
+                parsed_action = Action.pick_up_passenger(state.idle_passengers[idx])
 
         else:
             direction_idx = action - (self.action_count - 4)
@@ -391,10 +471,12 @@ class GridVecEnv(VecEnv):
                 3: Direction.Left,
             }[direction_idx]
 
-            return Action.head_towards(direction)
+            parsed_action = Action.head_towards(direction)
 
-        if invalid_action:
-            return Action.head_towards(Direction.Up)
+        if parsed_action is not None:
+            return parsed_action, True
+        else:
+            return Action.head_towards(Direction.Up), False
 
 
 class CarCallback:
@@ -402,26 +484,28 @@ class CarCallback:
         self.grid_env = grid_env
 
         self.next_action = None
+        self.action_valid = True
+
         self.transitions_arr: list[tuple | None] | None = None
         self.transitions_idx: int | None = None
 
     def get_action(self, state: GridState):
         assert self.next_action is not None
 
-        action = self.grid_env._parse_action(state, self.next_action)
+        action, action_valid = self.grid_env._parse_action(state, self.next_action)
+        self.action_valid = action_valid
         self.next_action = None
 
         return action
 
-    def transition_happened(self, state: GridState, action, new_state: GridState, reward: float):
+    def transition_happened(self, state: GridState, new_state: GridState):
         assert self.transitions_arr is not None
         assert self.transitions_idx is not None
 
         self.transitions_arr[self.transitions_idx] = (
             state,
-            action,
+            self.action_valid,
             new_state,
-            reward,
         )
 
         self.transitions_arr = None

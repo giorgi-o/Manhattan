@@ -18,7 +18,7 @@ def start(rust):
 
     grid_opts = GridOpts(
         initial_passenger_count=10,
-        passenger_spawn_rate=0.1,
+        passenger_spawn_rate=0.02,
         agent_car_count=2,
         npc_car_count=15,
     )
@@ -30,7 +30,7 @@ def start(rust):
     )
 
     env = GridVecEnv(rust, grid_opts, env_opts)
-    model = A2C("MultiInputPolicy", env, verbose=1)
+    model = A2C("MlpPolicy", env, verbose=1, tensorboard_log="tensorboard_log")
 
     model.learn(total_timesteps=25000)
 

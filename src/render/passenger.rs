@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 
-use crate::logic::{grid::Orientation, passenger::Passenger};
+use crate::logic::{passenger::Passenger, util::Orientation};
 
 use super::{
     car::CarRenderer,

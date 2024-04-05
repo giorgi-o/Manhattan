@@ -14,14 +14,6 @@ impl PassengerId {
 
         Self(NEXT_ID.fetch_add(1, Ordering::SeqCst))
     }
-
-    pub fn new(id: usize) -> Self {
-        Self(id)
-    }
-
-    pub fn inner(self) -> usize {
-        self.0
-    }
 }
 
 #[derive(Debug)]

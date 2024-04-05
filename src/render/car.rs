@@ -1,8 +1,7 @@
 use macroquad::prelude::*;
 
 use crate::logic::{
-    car::{Car, CarPosition},
-    grid::{Direction, Orientation, RoadSection},
+    car::{Car, CarPosition}, util::{Direction, Orientation, RoadSection},
 };
 
 use super::{

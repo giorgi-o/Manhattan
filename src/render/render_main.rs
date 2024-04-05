@@ -1,5 +1,8 @@
 use std::{
-    borrow::Borrow, ops::{Deref, DerefMut}, sync::{Arc, Condvar, Mutex, OnceLock}, time::{Duration, Instant}
+    borrow::Borrow,
+    ops::{Deref, DerefMut},
+    sync::{Arc, Condvar, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use super::grid::GridRenderer;
@@ -36,8 +39,6 @@ pub fn start(grid_bridge: GridRef) {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    println!("starting render_main");
-
     let grid_ref = unsafe { GRID_REF.take().unwrap() };
 
     // let time_per_tick = Duration::from_secs_f32(1.0 / Game::TICKS_PER_SEC as f32);
@@ -61,6 +62,7 @@ async fn main() {
         // }
 
         // game.render();
+
         next_frame().await;
     }
 }

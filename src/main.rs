@@ -12,6 +12,8 @@ mod logic {
     pub mod grid;
     pub mod passenger;
     pub mod pathfinding;
+    pub mod car_agent;
+    pub mod util;
 }
 
 mod render {
@@ -25,7 +27,6 @@ mod render {
 mod python {
     pub mod bridge {
         pub mod bridge;
-        // pub mod types;
         pub mod err_handling;
         pub mod py_grid;
     }
@@ -33,11 +34,6 @@ mod python {
 
 fn main() {
     initialise_python();
-
     start_python();
 }
 
-// fn main() {
-//     initialise_python();
-//     get_agent_decision(vec![1, 2, 3]);
-// }

@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 
-use crate::logic::grid::{Direction, Grid, LightState, Orientation, RoadSection};
+use crate::logic::{grid::{Grid, LightState}, util::{Direction, Orientation, RoadSection}};
 
 use super::{
     car::CarRenderer,

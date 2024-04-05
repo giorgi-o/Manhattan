@@ -4,9 +4,10 @@ use pyo3::{prelude::*, types::PyList};
 
 use crate::{
     logic::{
-        car::AgentAction,
-        grid::{Direction, Grid, GridOpts},
+        car_agent::AgentAction,
+        grid::{Grid, GridOpts},
         passenger::PassengerId,
+        util::Direction,
     },
     render::render_main::GridRef,
 };
@@ -26,7 +27,7 @@ pub fn initialise_python() {
         let cwd = std::env::current_dir().unwrap();
         let src_dir = cwd.join("src").join("python").join("src");
 
-        let sys = py.import("sys")?;
+        let sys = py.import_bound("sys")?;
         let path = sys.getattr("path")?;
         path.call_method("append", (src_dir,), None)?;
 
@@ -43,8 +44,8 @@ pub fn initialise_python() {
 
 pub fn main_module(py: Python<'_>) -> &PyModule {
     let main = MAIN_MODULE.get().expect("Main module not imported!");
-    let main: &PyModule = main.downcast(py).unwrap();
-    main
+    let main = main.downcast_bound::<PyModule>(py).unwrap();
+    main.as_gil_ref()
 }
 
 pub fn start_python() {
@@ -62,7 +63,11 @@ pub fn start_python() {
 
     if let Err(e) = res {
         Python::with_gil(|py| {
-            panic!("{}\n{}", e, e.traceback(py).unwrap().format().unwrap());
+            panic!(
+                "{}\n{}",
+                e,
+                e.traceback_bound(py).unwrap().format().unwrap()
+            );
         })
     }
 }
@@ -131,7 +136,7 @@ impl PythonAgentWrapper {
     fn new(py_obj: PyObject) -> Self {
         // check it has all the required methods
         Python::with_gil(|py| {
-            let obj = py_obj.as_ref(py);
+            let obj = py_obj.bind(py);
             assert!(obj.hasattr("get_action").unwrap());
             assert!(obj.hasattr("transition_happened").unwrap());
         });
@@ -143,36 +148,29 @@ impl PythonAgentWrapper {
         assert!(state.has_pov());
 
         Python::with_gil(|py| {
-            let obj = self.py_obj.as_ref(py);
+            let obj = self.py_obj.bind(py);
 
             let action = obj.call_method1("get_action", (state,)).unwrap();
             let action: PyAction = action.extract().unwrap();
 
+            action.assert_valid();
             action
         })
     }
 
-    pub fn transition_happened(
-        &self,
-        state: Option<PyGridState>,
-        action: Option<PyAction>,
-        new_state: PyGridState,
-        reward: f32,
-    ) {
+    pub fn transition_happened(&self, state: Option<PyGridState>, new_state: PyGridState) {
         Python::with_gil(|py| {
-            let obj = self.py_obj.as_ref(py);
-            let action = action.map(|a| a.raw);
+            let obj = self.py_obj.bind(py);
 
-            obj.call_method1("transition_happened", (state, action, new_state, reward))
+            obj.call_method1("transition_happened", (state, new_state))
                 .unwrap();
         });
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 #[pyclass]
 pub struct PyAction {
-    raw: PyObject, // i.e. pytorch neurons
     #[pyo3(get)]
     pick_up_passenger: Option<PyPassenger>,
     #[pyo3(get)]
@@ -184,9 +182,8 @@ pub struct PyAction {
 #[pymethods]
 impl PyAction {
     #[staticmethod]
-    fn pick_up_passenger(passenger: PyPassenger, raw: PyObject) -> Self {
+    fn pick_up_passenger(passenger: PyPassenger) -> Self {
         Self {
-            raw,
             pick_up_passenger: Some(passenger),
             drop_off_passenger: None,
             head_towards: None,
@@ -194,9 +191,8 @@ impl PyAction {
     }
 
     #[staticmethod]
-    fn drop_off_passenger(passenger: PyPassenger, raw: PyObject) -> Self {
+    fn drop_off_passenger(passenger: PyPassenger) -> Self {
         Self {
-            raw,
             pick_up_passenger: None,
             drop_off_passenger: Some(passenger),
             head_towards: None,
@@ -204,13 +200,39 @@ impl PyAction {
     }
 
     #[staticmethod]
-    fn head_towards(dir: Direction, raw: PyObject) -> Self {
+    fn head_towards(dir: Direction) -> Self {
         Self {
-            raw,
             pick_up_passenger: None,
             drop_off_passenger: None,
             head_towards: Some(dir),
         }
+    }
+
+    pub fn assert_valid(&self) {
+        let mut somes = 0;
+        self.pick_up_passenger.is_some().then(|| somes += 1);
+        self.drop_off_passenger.is_some().then(|| somes += 1);
+        self.head_towards.is_some().then(|| somes += 1);
+        assert_eq!(somes, 1);
+    }
+
+    fn is_pick_up(&self) -> bool {
+        self.assert_valid();
+        self.pick_up_passenger.is_some()
+    }
+
+    fn is_drop_off(&self) -> bool {
+        self.assert_valid();
+        self.drop_off_passenger.is_some()
+    }
+
+    fn is_head_towards(&self) -> bool {
+        self.assert_valid();
+        self.head_towards.is_some()
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self == other
     }
 }
 

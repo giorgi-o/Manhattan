@@ -1,11 +1,14 @@
 use pyo3::prelude::*;
 
 use crate::logic::{
-    car::{Car, CarPassenger, CarPosition, NextCarPosition},
-    grid::{Direction, Grid, GridOpts, RoadSection},
+    car::{Car, CarId, CarPassenger, CarPosition, NextCarPosition},
+    grid::{Grid, GridOpts, TickEvent},
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
+    util::{Direction, RoadSection},
 };
+
+use super::bridge::PyAction;
 
 #[derive(Clone, Debug)]
 #[pyclass]
@@ -28,7 +31,10 @@ pub struct PyGridState {
     #[pyo3(get)]
     idle_passengers: Vec<PyPassenger>,
 
+    #[pyo3(get)]
     ticks_passed: usize,
+    #[pyo3(get)]
+    events: PyTickEvents,
 }
 
 #[pymethods]
@@ -67,12 +73,16 @@ pub enum PyCarType {
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 #[pyclass]
 pub struct PyCar {
+    pub id: CarId,
+
     #[pyo3(get)]
     ty: PyCarType,
     #[pyo3(get)]
     pos: PyCoords,
     #[pyo3(get)]
     passengers: Vec<PyPassenger>,
+    #[pyo3(get)]
+    recent_actions: Vec<PyAction>,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -98,6 +108,17 @@ pub struct PyPassenger {
     distance_to_destination: usize,
 }
 
+#[derive(PartialEq, Eq, Hash, Clone, Default, Debug)]
+#[pyclass]
+pub struct PyTickEvents {
+    #[pyo3(get)]
+    passenger_spawned: Vec<(PyPassenger, PyCoords)>,
+    #[pyo3(get)]
+    car_picked_up_passenger: Vec<(PyCar, PyPassenger, PyCoords)>,
+    #[pyo3(get)]
+    car_dropped_off_passenger: Vec<(PyCar, PyPassenger, PyCoords)>,
+}
+
 impl PyGridState {
     pub fn has_pov(&self) -> bool {
         self.pov_car.is_some()
@@ -114,8 +135,7 @@ impl PyGridState {
 
         //  === process cars ===
         let cars = grid
-            .cars
-            .iter()
+            .cars()
             .map(|car| PyCar::build(car, ticks_passed))
             .collect::<Vec<_>>();
 
@@ -136,27 +156,32 @@ impl PyGridState {
             idle_passengers,
 
             ticks_passed,
+            events: PyTickEvents::default(),
         }
     }
 
     pub fn with_pov(&self, pov_car: &Car) -> Self {
         let mut this = self.clone();
-        this.pov_car = Some(PyCar::build(pov_car, self.ticks_passed));
+
+        // take the pov car out of the other cars vec
+        let pov_car_index = this
+            .other_cars
+            .iter()
+            .position(|car| car.id == pov_car.id())
+            .expect("pov car not in self.other_cars");
+        let py_pov_car = this.other_cars.swap_remove(pov_car_index);
+        this.pov_car = Some(py_pov_car);
 
         // calculate whether the car's action this tick has an effect
         let next_position = pov_car.position.next();
-        let can_turn = matches!(next_position, NextCarPosition::MustChoose(_));
+        let can_turn = matches!(next_position, NextCarPosition::MustChoose);
         this.can_turn = Some(can_turn);
 
         // sort passengers by closest to car
         this.idle_passengers.sort_by_cached_key(|passenger| {
-            let path = Path::find(pov_car.position, passenger.pos.into(), Grid::CAR_SPEED);
+            let path = pov_car.find_path(passenger.pos.into());
             path.cost
         });
-
-        // do not include the pov car in cars list
-        this.other_cars
-            .retain(|car| pov_car.position != car.pos.into());
 
         // sort cars by closest to pov car
         this.other_cars.sort_by_cached_key(|car| {
@@ -198,18 +223,6 @@ impl PyPassenger {
         }
     }
 }
-
-// impl From<RoadSection> for PyCoords {
-//     fn from(section: RoadSection) -> Self {
-//         Self {
-//             direction: section.direction,
-//             road: section.road(),
-//             section: section.section(),
-
-//             pos_in_section: None,
-//         }
-//     }
-// }
 
 impl From<CarPosition> for PyCoords {
     fn from(pos: CarPosition) -> Self {
@@ -260,10 +273,71 @@ impl PyCar {
             passengers.push(py_passenger);
         }
 
+        let recent_actions = car.recent_actions.iter().cloned().collect();
+
         Self {
+            id: car.id(),
             ty,
             pos: car.position.into(),
             passengers,
+            recent_actions,
         }
+    }
+}
+
+impl PyTickEvents {
+    pub fn build(grid: &Grid) -> Self {
+        let mut this = Self {
+            passenger_spawned: vec![],
+            car_picked_up_passenger: vec![],
+            car_dropped_off_passenger: vec![],
+        };
+
+        for event in &grid.tick_events {
+            match event {
+                TickEvent::PassengerSpawned(passenger_id) => {
+                    let passenger = grid
+                        .get_idle_passenger(*passenger_id)
+                        .expect("Passenger spawned but not found");
+
+                    let py_passenger = PyPassenger::idle(passenger, grid.ticks_passed);
+                    let py_pos = py_passenger.pos;
+                    this.passenger_spawned.push((py_passenger, py_pos));
+                }
+
+                TickEvent::PassengerPickedUp(car_id, passenger_id) => {
+                    let car = grid.car(*car_id);
+                    let passenger = car
+                        .passengers
+                        .iter()
+                        .find_map(|p| {
+                            if let CarPassenger::DroppingOff(p) = p {
+                                return (p.id == *passenger_id).then_some(p);
+                            };
+                            None
+                        })
+                        .expect("Passenger picked up but not found in car");
+
+                    let py_car = PyCar::build(car, grid.ticks_passed);
+                    let py_passenger = PyPassenger::riding(passenger, car, grid.ticks_passed);
+                    let py_pos = py_passenger.pos;
+                    this.car_picked_up_passenger
+                        .push((py_car, py_passenger, py_pos));
+                }
+
+                TickEvent::PassengerDroppedOff(car_id, passenger) => {
+                    let car = grid.car(*car_id);
+
+                    let py_passenger = PyPassenger::riding(passenger, car, grid.ticks_passed);
+                    let py_car = PyCar::build(car, grid.ticks_passed);
+                    let py_pos = py_passenger.pos;
+
+                    this.car_dropped_off_passenger
+                        .push((py_car, py_passenger, py_pos));
+                }
+            }
+        }
+
+        this
     }
 }

@@ -4,7 +4,7 @@ use pathfinding::directed::astar::astar;
 
 use super::{
     car::{Car, CarDecision, CarPosition},
-    grid::{Grid, LightState, RoadSection},
+    grid::{Grid, LightState}, util::RoadSection,
 };
 
 #[derive(Clone, Debug)]

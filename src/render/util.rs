@@ -2,7 +2,7 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use macroquad::prelude::*;
 
-use crate::logic::grid::Orientation;
+use crate::logic::util::Orientation;
 
 // util struct for abstracting over whether we are in horizontal or vertical
 #[derive(Clone, Copy, PartialEq, Debug)]
