@@ -1,7 +1,10 @@
-use std::{collections::VecDeque, sync::{
-    atomic::{AtomicUsize, Ordering},
-    Mutex,
-}};
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
+};
 
 use macroquad::color::Color;
 use pyo3::prelude::*;
@@ -81,6 +84,10 @@ impl CarPosition {
             road_section: new_road_section,
             position_in_section: 0,
         }
+    }
+
+    pub fn is_at_intersection(&self) -> bool {
+        self.position_in_section == self.road_section.direction.max_position_in_section()
     }
 }
 
@@ -169,10 +176,10 @@ impl Car {
 
     pub fn took_action(&mut self, action: PyAction) {
         if self.recent_actions.len() >= Self::RECENT_ACTIONS_LEN {
-            self.recent_actions.pop_front();
+            self.recent_actions.pop_back();
         }
 
-        self.recent_actions.push_back(action);
+        self.recent_actions.push_front(action);
     }
 }
 

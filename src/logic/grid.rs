@@ -1,6 +1,6 @@
 use std::mem;
 
-use macroquad::color::{BLUE, RED};
+use macroquad::color::*;
 use pyo3::prelude::*;
 use rand::Rng;
 
@@ -103,6 +103,8 @@ pub struct GridOpts {
     pub agent_car_count: u32,
     #[pyo3(get)]
     pub npc_car_count: u32,
+    #[pyo3(get)]
+    pub passengers_per_car: usize,
 }
 
 #[pymethods]
@@ -113,12 +115,14 @@ impl GridOpts {
         passenger_spawn_rate: f32,
         agent_car_count: u32,
         npc_car_count: u32,
+        passengers_per_car: usize,
     ) -> Self {
         Self {
             initial_passenger_count,
             passenger_spawn_rate,
             agent_car_count,
             npc_car_count,
+            passengers_per_car,
         }
     }
 }
@@ -202,13 +206,15 @@ impl Grid {
 
         // spawn required agent cars
         let mut python_agents = python_agents.into_iter();
-        for _ in 0..opts.agent_car_count {
+        let agent_car_colours = [RED, GREEN, ORANGE, PURPLE];
+        for i in 0..opts.agent_car_count {
             // let agent = PythonAgent::new();
             // let car = CarProps::new(agent, 3);
             // this.add_car(car);
 
             let python_agent = PythonAgent::new(python_agents.next().unwrap());
-            let agent_props = CarProps::new(python_agent, Self::CAR_SPEED, RED);
+            let colour = agent_car_colours[i as usize % agent_car_colours.len()];
+            let agent_props = CarProps::new(python_agent, Self::CAR_SPEED, colour);
             this.add_car(agent_props, None);
         }
 
@@ -327,22 +333,11 @@ impl Grid {
         // hashmap of positions, to easily check for car presence at coords
         let old_positions = self.cars().map(|car| car.position).collect::<HashSet<_>>();
 
-        // temporarily move cars out of grid (to have a &mut cars and &self)
-        // let mut cars = std::mem::take(&mut self.cars);
-        // let car_ids = self.cars.keys().copied().collect::<Vec<_>>();
         let car_ids = self.cars.keys().copied().collect::<Vec<_>>();
-
-        // for car in &mut cars {
-        for car_id in car_ids.iter().copied() {
+        for car_id in car_ids {
             // delete all "pick up" commands (they are per-tick)
-            // if !car.props.agent.is_npc() {
-            //     println!("passengers before prune: {:?}", car.passengers);
-            // }
-            // car().passengers.retain(|p| p.is_dropping_off());
             self.car_remove_pick_up_commands(car_id);
-            // if !car.props.agent.is_npc() {
-            //     println!("passengers after prune: {:?}", car.passengers);
-            // }
+            // todo: reset all passenger.car_on_its_way to false
 
             let old_position = self.car_position(car_id);
 
@@ -367,18 +362,10 @@ impl Grid {
             };
 
             // if the car is at a red light, sit still
-            if old_position.position_in_section
-                == old_position
-                    .road_section
-                    .direction
-                    .max_position_in_section()
-            {
-                let traffic_light = &self.traffic_lights[&old_position.road_section];
-                if traffic_light.state == LightState::Red {
-                    let mut car = self.car_mut(car_id);
-                    car.ticks_since_last_movement = 0;
-                    continue;
-                }
+            if self.is_red_traffic_light(&old_position) {
+                let car = self.car_mut(car_id);
+                car.ticks_since_last_movement = 0;
+                continue;
             }
 
             let next_position = self.car_next_position(car_id, decision);
@@ -395,9 +382,6 @@ impl Grid {
             cars_to_move.insert(old_position, next_position);
             next_positions.remove(&old_position);
             next_positions.insert(next_position, car_id);
-
-            // let mut car = self.car_mut(car_id);
-            // car.ticks_since_last_movement = 0;
         }
 
         // move the cars
@@ -432,9 +416,6 @@ impl Grid {
 
             self.cars.shrink_to_fit();
         }
-
-        // put cars back
-        // self.cars = cars;
 
         // check we didn't lose any cars in the process
         assert_eq!(cars_count + new_cars_count, self.cars.len());
@@ -502,6 +483,7 @@ impl Grid {
                         // === drop off passenger ===
                         let drop_off_here = passenger.destination == car.position;
                         if drop_off_here {
+                            print!("Car dropped off passenger! ");
                             let event = TickEvent::PassengerDroppedOff(car.props.id, passenger);
                             self.tick_events.push(event);
                         } else {
@@ -511,10 +493,11 @@ impl Grid {
                     }
 
                     CarPassenger::PickingUp(passenger_id) => {
-                        let passenger = self
-                            .waiting_passengers
-                            .get(&passenger_id)
-                            .expect("Car is picking up passenger that doesn't exist");
+                        let passenger = self.waiting_passengers.get(&passenger_id);
+                        let Some(passenger) = passenger else {
+                            // this passenger just got picked up by another car
+                            continue;
+                        };
 
                         // if the car is right now next to that passenger
                         if car.position == passenger.start {
@@ -530,37 +513,14 @@ impl Grid {
                             // and finally put them into the car
                             let car_passenger = CarPassenger::DroppingOff(passenger);
                             car.passengers.push(car_passenger);
+
+                            print!("Car picked up passenger! ");
                         }
                     }
                 }
             }
         }
     }
-
-    // fn calculate_reward(&mut self) -> f32 {
-    //     let events = mem::take(&mut self.tick_events);
-    //     let mut reward = 0.0;
-
-    //     // -1 for every waiting passenger
-    //     reward -= self.waiting_passengers.len() as f32;
-
-    //     // -1 for every passenger in a car
-    //     for car in self.cars() {
-    //         let passengers = car
-    //             .passengers
-    //             .iter()
-    //             .filter(|p| p.is_dropping_off())
-    //             .count();
-
-    //         reward -= passengers as f32;
-    //     }
-
-    //     // +100 for every dropped off passenger
-    //     // reward += events.passengers_dropped_off.len() as f32 * 100.0;
-
-    //     // reward
-    //     panic!("don't call calculate_reward(), move logic to python")
-    // }
 
     fn send_transition_result(&self, new_state: PyGridState) {
         for car in self.cars() {
@@ -584,6 +544,11 @@ impl Grid {
         panic!("Grid is full!")
     }
 
+    fn is_red_traffic_light(&self, car_pos: &CarPosition) -> bool {
+        return car_pos.is_at_intersection()
+            && self.traffic_lights[&car_pos.road_section].state == LightState::Red;
+    }
+
     pub fn waiting_passengers(&self) -> impl Iterator<Item = &Passenger> {
         self.waiting_passengers.values()
     }
@@ -595,17 +560,19 @@ impl Grid {
             .collect()
     }
 
-    fn spawn_passenger(&mut self, passenger: Passenger) {
-        self.waiting_passengers.insert(passenger.id, passenger);
-    }
-
     pub fn assign_car_to_passenger(&mut self, car_id: CarId, passenger: PassengerId) {
         let passenger_id = self
             .waiting_passengers
             .get(&passenger)
             .expect("Car tried to assign to non-existent passenger")
             .id;
+
+        let max_passengers_per_car = self.opts.passengers_per_car;
         let car = self.car_mut(car_id);
+        if car.passengers.len() >= max_passengers_per_car {
+            panic!("Car already has {} passengers", car.passengers.len());
+        }
+
         car.passengers.push(CarPassenger::PickingUp(passenger_id));
     }
 

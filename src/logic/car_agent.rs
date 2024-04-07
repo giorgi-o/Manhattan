@@ -241,8 +241,6 @@ impl CarPathAgent for PythonAgent {
 
         let agent_action: AgentAction = py_action.into();
         let agent_action_dbg = format!("{:?}", agent_action);
-        print!("{agent_action_dbg: <25} ");
-        std::io::stdout().flush().unwrap();
 
         match agent_action {
             AgentAction::PickUp(passenger_id) => {
@@ -305,6 +303,15 @@ impl CarPathAgent for PythonAgent {
                 self.path = Some(path);
             }
         }
+
+        let car = grid.car(car_id);
+        let passenger_count = car
+            .passengers
+            .iter()
+            .filter(|p| p.is_dropping_off())
+            .count();
+        print!("{agent_action_dbg: <25} {passenger_count: <2} ");
+        std::io::stdout().flush().unwrap();
     }
 
     fn get_path(&self) -> Option<&Path> {

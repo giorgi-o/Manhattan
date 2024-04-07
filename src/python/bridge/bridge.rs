@@ -9,7 +9,7 @@ use crate::{
         passenger::PassengerId,
         util::Direction,
     },
-    render::render_main::GridRef,
+    render::render_main::GridLock,
 };
 
 use super::{
@@ -93,13 +93,15 @@ fn exported_python_module(py: Python<'_>) -> PyResult<&PyModule> {
 
 #[pyclass]
 pub struct PyGridEnv {
-    grid_ref: GridRef,
+    grid_ref: GridLock,
 }
 
 #[pymethods]
 impl PyGridEnv {
     #[new]
     fn py_new(python_agents: Py<PyList>, opts: GridOpts, render: bool) -> Self {
+        println!("py_new grid");
+
         // let agent = PythonAgentWrapper::new(python_agent);
         let mut agents = vec![];
         Python::with_gil(|py| {
@@ -111,12 +113,13 @@ impl PyGridEnv {
         });
 
         let grid = Grid::new(opts, agents);
-
-        let mutex = Arc::new(Mutex::new(grid));
-        let grid_ref = GridRef { mutex };
+        let grid_ref = GridLock::new(grid);
 
         if render {
-            crate::render::render_main::start(grid_ref.clone());
+            let grid_ref = grid_ref.clone();
+            std::thread::spawn(move || {
+                crate::render::render_main::new_grid(grid_ref);
+            });
         }
 
         Self { grid_ref }
@@ -168,9 +171,14 @@ impl PythonAgentWrapper {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+// might want to replace with pytorch tensor or something
+type RawAction = Option<usize>;
+
+#[derive(Clone, Hash, Debug)]
 #[pyclass]
 pub struct PyAction {
+    #[pyo3(get)]
+    raw: RawAction,
     #[pyo3(get)]
     pick_up_passenger: Option<PyPassenger>,
     #[pyo3(get)]
@@ -182,8 +190,9 @@ pub struct PyAction {
 #[pymethods]
 impl PyAction {
     #[staticmethod]
-    fn pick_up_passenger(passenger: PyPassenger) -> Self {
+    fn pick_up_passenger(passenger: PyPassenger, raw: RawAction) -> Self {
         Self {
+            raw,
             pick_up_passenger: Some(passenger),
             drop_off_passenger: None,
             head_towards: None,
@@ -191,8 +200,9 @@ impl PyAction {
     }
 
     #[staticmethod]
-    fn drop_off_passenger(passenger: PyPassenger) -> Self {
+    fn drop_off_passenger(passenger: PyPassenger, raw: RawAction) -> Self {
         Self {
+            raw,
             pick_up_passenger: None,
             drop_off_passenger: Some(passenger),
             head_towards: None,
@@ -200,8 +210,9 @@ impl PyAction {
     }
 
     #[staticmethod]
-    fn head_towards(dir: Direction) -> Self {
+    fn head_towards(dir: Direction, raw: RawAction) -> Self {
         Self {
+            raw,
             pick_up_passenger: None,
             drop_off_passenger: None,
             head_towards: Some(dir),
@@ -234,13 +245,32 @@ impl PyAction {
     fn __eq__(&self, other: &Self) -> bool {
         self == other
     }
+
+    fn __repr__(&self) -> String {
+        let agent_action: AgentAction = self.into();
+        format!("<PyAction {:?}>", agent_action)
+    }
 }
+
+impl PartialEq for PyAction {
+    fn eq(&self, other: &Self) -> bool {
+        AgentAction::from(self) == AgentAction::from(other)
+    }
+}
+
+impl Eq for PyAction {}
 
 impl From<PyAction> for AgentAction {
     fn from(py_action: PyAction) -> Self {
-        if let Some(passenger) = py_action.pick_up_passenger {
+        AgentAction::from(&py_action)
+    }
+}
+
+impl From<&PyAction> for AgentAction {
+    fn from(py_action: &PyAction) -> Self {
+        if let Some(passenger) = &py_action.pick_up_passenger {
             Self::PickUp(passenger.id)
-        } else if let Some(passenger) = py_action.drop_off_passenger {
+        } else if let Some(passenger) = &py_action.drop_off_passenger {
             Self::DropOff(passenger.id)
         } else if let Some(head_towards) = py_action.head_towards {
             Self::HeadTowards(head_towards)

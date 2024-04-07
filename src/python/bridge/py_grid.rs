@@ -47,6 +47,16 @@ impl PyGridState {
             self.ticks_passed
         )
     }
+
+    fn total_passenger_count(&self) -> usize {
+        self.idle_passengers.len()
+            + self.pov_car.as_ref().unwrap().passengers.len()
+            + self
+                .other_cars
+                .iter()
+                .map(|car| car.passengers.len())
+                .sum::<usize>()
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
@@ -139,9 +149,8 @@ impl PyGridState {
             .map(|car| PyCar::build(car, ticks_passed))
             .collect::<Vec<_>>();
 
-        // tmp dbg
-        // println!("idle passengers: {:?}", idle_passengers);
-        // println!("cars: {:?}", cars);
+        // === process events ===
+        let events = PyTickEvents::build(grid);
 
         // === return ===
         Self {
@@ -156,7 +165,7 @@ impl PyGridState {
             idle_passengers,
 
             ticks_passed,
-            events: PyTickEvents::default(),
+            events,
         }
     }
 

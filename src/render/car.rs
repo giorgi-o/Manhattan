@@ -152,20 +152,20 @@ impl<'g> CarRenderer<'g> {
         };
 
         let Some(path) = agent.get_path() else {
-            return;
+            return; // no path to draw
         };
 
         let mut sections = path.sections.iter().peekable();
         // first section is the one the car is currently on
         // we don't want to render a line over the whole section, skip it
-        sections.next();
+        // sections.next();
 
         let mut start = PathLineBound::Car(self.car.position);
         // for path_section in sections {
         while let Some(path_section) = sections.next() {
             let end = match sections.peek() {
                 Some(next_section) => {
-                    PathLineBound::SectionsIntersection(((*path_section), **next_section))
+                PathLineBound::SectionsIntersection(((*path_section), **next_section))
                 }
                 None => PathLineBound::Car(path.destination),
             };
@@ -181,18 +181,18 @@ impl<'g> CarRenderer<'g> {
                 }
             }
 
-            self.render_path_line(start, end);
+            self.render_path_line(start, end, self.car.props.colour);
 
             start = end;
         }
     }
 
-    fn render_path_line(&self, start: PathLineBound, end: PathLineBound) {
+    fn render_path_line(&self, start: PathLineBound, end: PathLineBound, colour: Color) {
         let (x1, y1) = self.get_line_xy(start, true);
         let (x2, y2) = self.get_line_xy(end, false);
 
         let line = Line { x1, y1, x2, y2 };
-        line.draw(Self::PATH_COLOUR);
+        line.draw(colour);
     }
 
     fn road(&self) -> RoadRenderer<'g> {

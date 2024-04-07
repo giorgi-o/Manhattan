@@ -9,7 +9,7 @@ from env import GridVecEnv, EnvOpts
 
 
 def start(rust):
-    start_debug()
+    # start_debug()
 
     GridEnv = rust.PyGridEnv
     GridOpts = rust.GridOpts
@@ -21,18 +21,23 @@ def start(rust):
         passenger_spawn_rate=0.02,
         agent_car_count=2,
         npc_car_count=15,
+        passengers_per_car=4,
     )
     env_opts = EnvOpts(
         passenger_radius=10,
         car_radius=10,
-        passengers_per_car=4,
-        render=False,
+        render=True,
     )
 
     env = GridVecEnv(rust, grid_opts, env_opts)
+
+    policy_kwardgs = {
+        "net_arch": [128, 128],
+    }
+
     model = A2C("MlpPolicy", env, verbose=1, tensorboard_log="tensorboard_log")
 
-    model.learn(total_timesteps=25000)
+    model.learn(total_timesteps=99999999999)
 
     # class CarAgent:
     #     def get_action(self, state):

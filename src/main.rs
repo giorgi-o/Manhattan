@@ -5,14 +5,14 @@ use std::{
 
 use logic::grid::Grid;
 use python::bridge::bridge::{initialise_python, start_python};
-use render::render_main::GridRef;
+use render::render_main::GridLock;
 
 mod logic {
     pub mod car;
+    pub mod car_agent;
     pub mod grid;
     pub mod passenger;
     pub mod pathfinding;
-    pub mod car_agent;
     pub mod util;
 }
 
@@ -36,4 +36,3 @@ fn main() {
     initialise_python();
     start_python();
 }
-
