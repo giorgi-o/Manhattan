@@ -23,16 +23,22 @@ pub fn initialise_python() {
     pyo3::prepare_freethreaded_python();
 
     let res = Python::with_gil(|py| -> PyResult<()> {
-        // add src/python/src to sys.path
-        let cwd = std::env::current_dir().unwrap();
-        let src_dir = cwd.join("src").join("python").join("src");
+        // find "manhattan" dir, regardless of cwd
+        let exe_path = std::env::current_exe().unwrap();
+        #[rustfmt::skip]
+        let manhattan_dir = exe_path
+            .parent().unwrap() // debug/release
+            .parent().unwrap() // target
+            .parent().unwrap(); // manhattan
 
+        // add src/python/src to sys.path
+        let src_dir = manhattan_dir.join("src").join("python").join("src");
         let sys = py.import_bound("sys")?;
-        let path = sys.getattr("path")?;
-        path.call_method("append", (src_dir,), None)?;
+        let sys_path = sys.getattr("path")?;
+        sys_path.call_method1("append", (src_dir,))?;
 
         // import main
-        let main = py.import("main")?;
+        let main = py.import_bound("main")?;
         let main = main.to_object(py);
         MAIN_MODULE.set(main).unwrap();
 
@@ -100,12 +106,9 @@ pub struct PyGridEnv {
 impl PyGridEnv {
     #[new]
     fn py_new(python_agents: Py<PyList>, opts: GridOpts, render: bool) -> Self {
-        println!("py_new grid");
-
-        // let agent = PythonAgentWrapper::new(python_agent);
         let mut agents = vec![];
         Python::with_gil(|py| {
-            let python_agents = python_agents.as_ref(py);
+            let python_agents = python_agents.bind(py);
             for agent_obj in python_agents.iter() {
                 let agent = PythonAgentWrapper::new(agent_obj.to_object(py));
                 agents.push(agent);
@@ -153,7 +156,7 @@ impl PythonAgentWrapper {
         Python::with_gil(|py| {
             let obj = self.py_obj.bind(py);
 
-            let action = obj.call_method1("get_action", (state,)).unwrap();
+            let action = obj.call_method1("get_action", (state,)).unwrap_py();
             let action: PyAction = action.extract().unwrap();
 
             action.assert_valid();
@@ -166,7 +169,7 @@ impl PythonAgentWrapper {
             let obj = self.py_obj.bind(py);
 
             obj.call_method1("transition_happened", (state, new_state))
-                .unwrap();
+                .unwrap_py();
         });
     }
 }

@@ -310,7 +310,10 @@ impl CarPathAgent for PythonAgent {
             .iter()
             .filter(|p| p.is_dropping_off())
             .count();
-        print!("{agent_action_dbg: <25} {passenger_count: <2} ");
+
+        if grid.opts.verbose {
+            print!("{agent_action_dbg: <25} {passenger_count: <2} ");
+        }
         std::io::stdout().flush().unwrap();
     }
 

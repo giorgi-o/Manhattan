@@ -10,7 +10,7 @@ use crate::logic::{
 
 use super::bridge::PyAction;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[pyclass]
 pub struct PyGridState {
     #[pyo3(get)]
@@ -48,6 +48,10 @@ impl PyGridState {
         )
     }
 
+    fn __eq__(&self, other: &Self) -> bool {
+        self == other
+    }
+
     fn total_passenger_count(&self) -> usize {
         self.idle_passengers.len()
             + self.pov_car.as_ref().unwrap().passengers.len()
@@ -80,7 +84,7 @@ pub enum PyCarType {
     Npc,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(Hash, Clone, Debug)]
 #[pyclass]
 pub struct PyCar {
     pub id: CarId,
@@ -196,6 +200,14 @@ impl PyGridState {
         this.other_cars.sort_by_cached_key(|car| {
             Path::distance(pov_car.position, car.pos.into(), Grid::CAR_SPEED);
         });
+
+        // only include events by this car
+        this.events
+            .car_picked_up_passenger
+            .retain(|(car, _, _)| car.id == pov_car.id());
+        this.events
+            .car_dropped_off_passenger
+            .retain(|(car, _, _)| car.id == pov_car.id());
 
         this
     }
@@ -348,5 +360,20 @@ impl PyTickEvents {
         }
 
         this
+    }
+}
+
+impl PartialEq for PyCar {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for PyCar {}
+
+#[pymethods]
+impl PyCar {
+    fn __eq__(&self, other: &PyCar) -> bool {
+        self == other
     }
 }

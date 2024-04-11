@@ -92,7 +92,7 @@ pub enum TickEvent {
     PassengerDroppedOff(CarId, Passenger),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[pyclass]
 pub struct GridOpts {
     #[pyo3(get)]
@@ -105,6 +105,8 @@ pub struct GridOpts {
     pub npc_car_count: u32,
     #[pyo3(get)]
     pub passengers_per_car: usize,
+    #[pyo3(get)]
+    pub verbose: bool,
 }
 
 #[pymethods]
@@ -116,6 +118,7 @@ impl GridOpts {
         agent_car_count: u32,
         npc_car_count: u32,
         passengers_per_car: usize,
+        verbose: bool,
     ) -> Self {
         Self {
             initial_passenger_count,
@@ -123,6 +126,7 @@ impl GridOpts {
             agent_car_count,
             npc_car_count,
             passengers_per_car,
+            verbose,
         }
     }
 }
@@ -286,7 +290,9 @@ impl Grid {
     }
 
     pub fn tick(&mut self) {
-        print!("Tick: {} ", self.ticks_passed);
+        if self.opts.verbose {
+            print!("Tick: {} ", self.ticks_passed);
+        }
 
         let tick_state = PyGridState::build(self);
         self.tick_state = Some(tick_state);
@@ -301,6 +307,10 @@ impl Grid {
 
         let post_tick_state = PyGridState::build(self);
         self.send_transition_result(post_tick_state);
+
+        if self.opts.verbose {
+            println!();
+        }
     }
 
     fn tick_traffic_lights(&mut self) {
