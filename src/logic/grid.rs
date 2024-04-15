@@ -12,6 +12,7 @@ use crate::{
 use super::{
     car::{Car, CarDecision, CarId, CarPassenger, CarPosition, CarProps},
     car_agent::{NullAgent, PythonAgent, RandomTurns},
+    ev::ChargingStation,
     passenger::{Passenger, PassengerId},
     util::{hashmap_with_capacity, HashMap, HashSet, Orientation, RoadSection},
 };
@@ -92,7 +93,7 @@ pub enum TickEvent {
     PassengerDroppedOff(CarId, Passenger),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[pyclass]
 pub struct GridOpts {
     #[pyo3(get)]
@@ -106,6 +107,8 @@ pub struct GridOpts {
     #[pyo3(get)]
     pub passengers_per_car: usize,
     #[pyo3(get)]
+    pub charging_stations: Vec<CarPosition>,
+    #[pyo3(get)]
     pub verbose: bool,
 }
 
@@ -118,6 +121,7 @@ impl GridOpts {
         agent_car_count: u32,
         npc_car_count: u32,
         passengers_per_car: usize,
+        charging_stations: Vec<CarPosition>,
         verbose: bool,
     ) -> Self {
         Self {
@@ -126,6 +130,7 @@ impl GridOpts {
             agent_car_count,
             npc_car_count,
             passengers_per_car,
+            charging_stations,
             verbose,
         }
     }
@@ -144,6 +149,7 @@ pub struct Grid {
     pub cars_to_spawn: Vec<(CarProps, Option<CarPosition>)>,
 
     pub traffic_lights: HashMap<RoadSection, TrafficLight>,
+    pub charging_stations: Vec<ChargingStation>,
 
     pub ticks_passed: usize,
 
@@ -168,12 +174,12 @@ impl Grid {
     pub fn new(opts: GridOpts, python_agents: Vec<PythonAgentWrapper>) -> Self {
         assert_eq!(opts.agent_car_count, python_agents.len() as u32);
 
-        // assign a traffic light to every road
         let traffic_lights = Self::generate_traffic_lights();
+        let charging_stations = Self::generate_charging_stations(&opts.charging_stations);
         let waiting_passengers = Self::generate_passengers(opts.initial_passenger_count);
 
         let mut this = Self {
-            opts,
+            opts: opts.clone(),
 
             // grid: HashMap::new(),
             cars: HashMap::default(),
@@ -185,6 +191,7 @@ impl Grid {
             cars_to_spawn: Vec::new(),
 
             traffic_lights,
+            charging_stations,
 
             ticks_passed: 0,
 
@@ -242,6 +249,13 @@ impl Grid {
         }
 
         traffic_lights
+    }
+
+    fn generate_charging_stations(coords: &[CarPosition]) -> Vec<ChargingStation> {
+        coords
+            .into_iter()
+            .map(|coord| ChargingStation::new(Some(*coord), 1, 0.01))
+            .collect()
     }
 
     fn generate_passengers(count: u32) -> HashMap<PassengerId, Passenger> {
@@ -434,7 +448,15 @@ impl Grid {
 
     fn car_remove_pick_up_commands(&mut self, car_id: CarId) {
         let car = self.cars.get_mut(&car_id).unwrap();
-        car.passengers.retain(|p| p.is_dropping_off());
+        car.passengers.retain_mut(|p| {
+            match p {
+                CarPassenger::PickingUp(_) => false, // discard picking up
+                CarPassenger::DroppingOff(p) => {
+                    p.car_on_its_way = false; // all pickup commands get reset between ticks
+                    true
+                }
+            }
+        });
     }
 
     fn car_next_position(&mut self, car_id: CarId, decision: CarDecision) -> CarPosition {

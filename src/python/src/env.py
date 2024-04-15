@@ -477,7 +477,7 @@ class GridEnvWorder(EnvWorker):
             # need to add a non-numpy attribute, otherwise when tianshou
             # tries to np.stack the observation batches together, it gets
             # confused and goes along the wrong axis (or something)
-            random_attr=A(),
+            random_attr=EmptyClass(),
         )
 
         if self.reset_called:
@@ -506,7 +506,7 @@ class GridEnvWorder(EnvWorker):
 
     def transition_happened(self, old_state: GridState, new_state: GridState):
         # note: old_state won't be the same as self.old_obs if reset is called
-        # I think because old_state will be the state without the cars, but
+        # I think because old_state will be the new state without the cars, but
         # self.old_obs will be the one from the previous env
 
         self.new_obs = new_state
@@ -560,5 +560,5 @@ class Observation(np.ndarray):
         self.mask = getattr(obj, "mask", None)
 
 
-class A:
+class EmptyClass:
     pass

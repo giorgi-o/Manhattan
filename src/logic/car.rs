@@ -17,10 +17,11 @@ use crate::python::bridge::{
 
 use super::{
     car_agent::CarAgent,
+    ev::{BatteryPercent, ChargingStationId},
     grid::Grid,
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
-    util::RoadSection,
+    util::{Direction, RoadSection},
 };
 
 use macroquad::color::*;
@@ -43,6 +44,9 @@ pub struct CarPosition {
     pub road_section: RoadSection,
     #[pyo3(get)]
     pub position_in_section: usize, // higher = further along
+
+    #[pyo3(get)]
+    pub in_charging_station: Option<ChargingStationId>, // if some, overrides the two above
 }
 
 pub enum NextCarPosition {
@@ -58,6 +62,7 @@ impl CarPosition {
             position_in_section: rng
                 .gen_range(0..=road_section.direction.max_position_in_section()),
             road_section,
+            in_charging_station: None,
         }
     }
 
@@ -73,6 +78,7 @@ impl CarPosition {
         let next = Self {
             road_section: self.road_section,
             position_in_section: next_position,
+            in_charging_station: self.in_charging_station,
         };
         NextCarPosition::OnlyStraight(next)
     }
@@ -83,11 +89,29 @@ impl CarPosition {
         Self {
             road_section: new_road_section,
             position_in_section: 0,
+            in_charging_station: self.in_charging_station,
         }
     }
 
     pub fn is_at_intersection(&self) -> bool {
         self.position_in_section == self.road_section.direction.max_position_in_section()
+    }
+}
+
+#[pymethods]
+impl CarPosition {
+    #[new]
+    pub fn new(
+        direction: Direction,
+        road_index: usize,
+        section_index: usize,
+        position_in_section: usize,
+    ) -> Self {
+        Self {
+            road_section: RoadSection::get(direction, road_index, section_index),
+            position_in_section,
+            in_charging_station: None,
+        }
     }
 }
 
@@ -150,6 +174,7 @@ pub struct Car {
     pub position: CarPosition,
     pub ticks_since_last_movement: usize,
     pub passengers: Vec<CarPassenger>,
+    pub battery: BatteryPercent,
     pub recent_actions: VecDeque<PyAction>,
 }
 
@@ -162,6 +187,7 @@ impl Car {
             position,
             ticks_since_last_movement: 0,
             passengers: vec![],
+            battery: BatteryPercent::new(1.0),
             recent_actions: VecDeque::with_capacity(Self::RECENT_ACTIONS_LEN),
         }
     }
