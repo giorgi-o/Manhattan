@@ -1,4 +1,5 @@
-use std::mem;
+use core::panic;
+use std::{io::Write, mem};
 
 use macroquad::color::*;
 use pyo3::prelude::*;
@@ -10,9 +11,9 @@ use crate::{
 };
 
 use super::{
-    car::{Car, CarDecision, CarId, CarPassenger, CarPosition, CarProps},
+    car::{Car, CarDecision, CarId, CarPassenger, CarPosition, CarProps, CarToSpawn},
     car_agent::{NullAgent, PythonAgent, RandomTurns},
-    ev::ChargingStation,
+    ev::{ChargingStation, ChargingStationId},
     passenger::{Passenger, PassengerId},
     util::{hashmap_with_capacity, HashMap, HashSet, Orientation, RoadSection},
 };
@@ -91,6 +92,7 @@ pub enum TickEvent {
     PassengerSpawned(PassengerId),
     PassengerPickedUp(CarId, PassengerId),
     PassengerDroppedOff(CarId, Passenger),
+    CarOutOfBattery(CarId, CarPosition),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +103,8 @@ pub struct GridOpts {
     #[pyo3(get)]
     pub passenger_spawn_rate: f32, // chance of spawning a new passenger per tick
     #[pyo3(get)]
+    pub max_passengers: usize,
+    #[pyo3(get)]
     pub agent_car_count: u32,
     #[pyo3(get)]
     pub npc_car_count: u32,
@@ -108,6 +112,12 @@ pub struct GridOpts {
     pub passengers_per_car: usize,
     #[pyo3(get)]
     pub charging_stations: Vec<CarPosition>,
+    #[pyo3(get)]
+    pub charging_station_capacity: usize,
+    #[pyo3(get)]
+    pub car_radius: usize,
+    #[pyo3(get)]
+    pub passenger_radius: usize,
     #[pyo3(get)]
     pub verbose: bool,
 }
@@ -118,19 +128,27 @@ impl GridOpts {
     fn new(
         initial_passenger_count: u32,
         passenger_spawn_rate: f32,
+        max_passengers: usize,
         agent_car_count: u32,
         npc_car_count: u32,
         passengers_per_car: usize,
         charging_stations: Vec<CarPosition>,
+        charging_station_capacity: usize,
+        car_radius: usize,
+        passenger_radius: usize,
         verbose: bool,
     ) -> Self {
         Self {
             initial_passenger_count,
             passenger_spawn_rate,
+            max_passengers,
             agent_car_count,
             npc_car_count,
             passengers_per_car,
             charging_stations,
+            charging_station_capacity,
+            car_radius,
+            passenger_radius,
             verbose,
         }
     }
@@ -145,11 +163,10 @@ pub struct Grid {
     pub waiting_passengers: HashMap<PassengerId, Passenger>,
     waiting_passenger_positions: HashMap<CarPosition, PassengerId>,
 
-    // None position = random spawn point
-    pub cars_to_spawn: Vec<(CarProps, Option<CarPosition>)>,
+    pub cars_to_spawn: Vec<CarToSpawn>,
 
     pub traffic_lights: HashMap<RoadSection, TrafficLight>,
-    pub charging_stations: Vec<ChargingStation>,
+    pub charging_stations: HashMap<ChargingStationId, ChargingStation>,
 
     pub ticks_passed: usize,
 
@@ -166,6 +183,7 @@ impl Grid {
     pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 60; // 3s at 20TPS
 
     pub const CAR_SPEED: usize = 3;
+    pub const CAR_DISCHARGE_RATE: f32 = 0.002; // can go 500 ticks without charging
 
     // pub const MAX_TOTAL_PASSENGERS: usize = Self::HORIZONTAL_ROADS * Self::VERTICAL_ROADS;
     // pub const MAX_WAITING_PASSENGERS: usize = Self::MAX_TOTAL_PASSENGERS / 2;
@@ -175,13 +193,15 @@ impl Grid {
         assert_eq!(opts.agent_car_count, python_agents.len() as u32);
 
         let traffic_lights = Self::generate_traffic_lights();
-        let charging_stations = Self::generate_charging_stations(&opts.charging_stations);
+        let charging_stations = Self::generate_charging_stations(
+            &opts.charging_stations,
+            opts.charging_station_capacity,
+        );
         let waiting_passengers = Self::generate_passengers(opts.initial_passenger_count);
 
         let mut this = Self {
             opts: opts.clone(),
 
-            // grid: HashMap::new(),
             cars: HashMap::default(),
             car_positions: HashMap::default(),
 
@@ -211,7 +231,12 @@ impl Grid {
 
         // spawn required npc cars
         for _ in 0..opts.npc_car_count {
-            let npc_props = CarProps::new(RandomTurns {}, Self::CAR_SPEED, BLUE);
+            let npc_props = CarProps::new(
+                RandomTurns {},
+                Self::CAR_SPEED,
+                Self::CAR_DISCHARGE_RATE,
+                BLUE,
+            );
             this.add_car(npc_props, None);
         }
 
@@ -219,13 +244,14 @@ impl Grid {
         let mut python_agents = python_agents.into_iter();
         let agent_car_colours = [RED, GREEN, ORANGE, PURPLE];
         for i in 0..opts.agent_car_count {
-            // let agent = PythonAgent::new();
-            // let car = CarProps::new(agent, 3);
-            // this.add_car(car);
-
             let python_agent = PythonAgent::new(python_agents.next().unwrap());
             let colour = agent_car_colours[i as usize % agent_car_colours.len()];
-            let agent_props = CarProps::new(python_agent, Self::CAR_SPEED, colour);
+            let agent_props = CarProps::new(
+                python_agent,
+                Self::CAR_SPEED,
+                Self::CAR_DISCHARGE_RATE,
+                colour,
+            );
             this.add_car(agent_props, None);
         }
 
@@ -251,10 +277,14 @@ impl Grid {
         traffic_lights
     }
 
-    fn generate_charging_stations(coords: &[CarPosition]) -> Vec<ChargingStation> {
+    fn generate_charging_stations(
+        coords: &[CarPosition],
+        capacity: usize,
+    ) -> HashMap<ChargingStationId, ChargingStation> {
         coords
             .into_iter()
-            .map(|coord| ChargingStation::new(Some(*coord), 1, 0.01))
+            .map(|coord| ChargingStation::new(Some(*coord), capacity, 0.01))
+            .map(|cs| (cs.id, cs))
             .collect()
     }
 
@@ -291,8 +321,20 @@ impl Grid {
         self.car(car).position
     }
 
+    pub fn unspawned_car(&self, car_id: CarId) -> &CarToSpawn {
+        self.cars_to_spawn
+            .iter()
+            .find(|cs| cs.props.id == car_id)
+            .unwrap()
+    }
+
     pub fn add_car(&mut self, props: CarProps, position: Option<CarPosition>) {
-        self.cars_to_spawn.push((props, position));
+        let car_to_spawn = CarToSpawn {
+            props,
+            position,
+            out_of_battery: None,
+        };
+        self.cars_to_spawn.push(car_to_spawn);
     }
 
     pub fn has_car_at(&self, position: &CarPosition) -> bool {
@@ -301,6 +343,16 @@ impl Grid {
 
     pub fn traffic_light_at(&self, section: &RoadSection) -> &TrafficLight {
         &self.traffic_lights[section]
+    }
+
+    pub fn charging_station_entrance_at(&self, pos: CarPosition) -> Option<&ChargingStation> {
+        let id = ChargingStationId::from(pos);
+        self.charging_stations.get(&id)
+    }
+
+    pub fn charging_station_at_mut(&mut self, pos: CarPosition) -> Option<&mut ChargingStation> {
+        let id = ChargingStationId::from(pos);
+        self.charging_stations.get_mut(&id)
     }
 
     pub fn tick(&mut self) {
@@ -347,29 +399,26 @@ impl Grid {
 
         // to double check we don't lose cars
         let cars_count = self.cars.len();
+        let new_cars_count = self.cars_to_spawn.len();
 
-        // list of before-and-after positions
+        // map of before-and-after positions
         let mut cars_to_move = hashmap_with_capacity(self.cars.len());
 
-        // set of after positions, to see if another car is already moving there
+        // map of after positions, to see if another car is already moving there
         let mut next_positions = hashmap_with_capacity(self.cars.len());
 
-        // hashmap of positions, to easily check for car presence at coords
+        // set of before positions, to easily check for car presence at coords
         let old_positions = self.cars().map(|car| car.position).collect::<HashSet<_>>();
 
         let car_ids = self.cars.keys().copied().collect::<Vec<_>>();
         for car_id in car_ids {
             // delete all "pick up" commands (they are per-tick)
             self.car_remove_pick_up_commands(car_id);
-            // todo: reset all passenger.car_on_its_way to false
+            for passenger in self.waiting_passengers.values_mut() {
+                passenger.car_on_its_way = false;
+            }
 
             let old_position = self.car_position(car_id);
-
-            // by default, the car stays still
-            let previous_car_at_pos = next_positions.insert(old_position, car_id);
-            if let Some(prev_car_id) = previous_car_at_pos {
-                panic!("{prev_car_id:?} tried to move to {old_position:?} even though {car_id:?} was already there");
-            }
 
             // tick agent
             let decision = {
@@ -385,65 +434,208 @@ impl Grid {
                 decision
             };
 
-            // if the car is at a red light, sit still
-            if self.is_red_traffic_light(&old_position) {
-                let car = self.car_mut(car_id);
-                car.ticks_since_last_movement = 0;
-                continue;
-            }
+            let next_position = 'next_pos: {
+                // if the car is at a red light, sit still
+                if self.is_red_traffic_light(&old_position) {
+                    break 'next_pos old_position;
+                }
 
-            let next_position = self.car_next_position(car_id, decision);
+                let neighbour_cs = match old_position.in_charging_station {
+                    Some(cs_id) => Some(self.charging_stations.get(&cs_id).unwrap()),
+                    None => self.charging_station_entrance_at(old_position),
+                };
 
-            // if there is a car already there -> don't move there, cause that
-            // car might not move (e.g. red light)
-            // if there will be a car there next turn -> don't move either
-            if old_positions.contains(&next_position) || next_positions.contains_key(&next_position)
-            {
-                continue;
-            }
+                let car = self.car(car_id);
+                let next_position = car.next_position(decision, neighbour_cs);
 
-            // the car should move.
+                // if there is a car already there -> don't move there, cause that
+                // car might not move (e.g. red light)
+                // if there will be a car there next turn -> don't move either
+                if old_positions.contains(&next_position)
+                    || next_positions.contains_key(&next_position)
+                {
+                    break 'next_pos old_position;
+                }
+
+                // the car should move.
+                break 'next_pos next_position;
+            };
+
+            // add the car movement to the list
             cars_to_move.insert(old_position, next_position);
-            next_positions.remove(&old_position);
-            next_positions.insert(next_position, car_id);
+
+            let prev_car = next_positions.insert(next_position, car_id);
+            if let Some(prev_car_id) = prev_car {
+                panic!("{car_id:?} tried to move to {old_position:?} even though {prev_car_id:?} was already there");
+            }
         }
+
+        let mut cars_out_of_battery = vec![];
 
         // move the cars
         for car in self.cars.values_mut() {
             let Some(next_position) = cars_to_move.remove(&car.position) else {
-                // car stays still
-                car.ticks_since_last_movement += 1;
-                continue;
+                panic!("{:?} was not in cars_to_move (no next position)", car.id());
             };
 
-            assert_ne!(car.position, next_position);
-            car.position = next_position;
-            car.ticks_since_last_movement = 0;
+            // if the car is at a charging station, charge its battery
+            if let Some(cs_id) = car.position.in_charging_station {
+                let cs = self.charging_stations.get(&cs_id).unwrap();
+                assert!(cs.cars.contains(&car.id()), "{:?} not in cs.cars", car.id());
+
+                car.battery.charging(cs);
+            }
+
+            if car.position != next_position {
+                // car moves
+
+                // tick car battery
+                if !car.props.agent.is_npc() {
+                    car.battery.discharge(car.props.discharge_rate);
+                    // car.battery.discharge(0.01);
+                }
+
+                if car.battery.is_empty() && !car.props.agent.is_npc() {
+                    // car ran out of battery
+                    cars_out_of_battery.push(car.id());
+                    next_positions.remove(&next_position);
+                    // can't do any more processing here because can't edit
+                    // self.cars while iterating over it
+                } else {
+                    let old_position = car.position;
+
+                    // move the car
+                    car.position = next_position;
+                    car.ticks_until_next_movement = car.props.speed;
+
+                    // if the car entered/left charging station, tell the cs
+                    // note: we assume a car can't teleport from one cs to another
+                    if old_position.in_charging_station.is_some()
+                        && next_position.in_charging_station.is_some()
+                    {
+                        // car stays in same cs, do nothing
+                    } else if let Some(cs_id) = old_position.in_charging_station {
+                        let cs = self.charging_stations.get_mut(&cs_id).unwrap();
+                        let car_index_in_cs = cs.cars.iter().position(|c| *c == car.id()).unwrap_or_else( ||
+                            panic!("car {:?} says it's in charging station, but charging station doesn't know about car",
+                                car.id())
+                        );
+
+                        cs.cars.swap_remove(car_index_in_cs);
+                    } else if let Some(cs_id) = next_position.in_charging_station {
+                        let cs = self.charging_stations.get_mut(&cs_id).unwrap();
+
+                        assert!(cs.has_space());
+                        cs.cars.push(car.id());
+                    }
+                }
+            } else {
+                // car stays still
+                // this could be either because it should only move forward every
+                // "speed" ticks, or because there's something in front (traffic light
+                // or other car)
+                car.ticks_until_next_movement = car.ticks_until_next_movement.saturating_sub(1);
+            }
+
+            // assert_ne!(car.position, next_position);
+            // car.position = next_position;
+            // car.ticks_since_last_movement = 0;
+        }
+
+        // process "out of battery" cars
+        for car_id in cars_out_of_battery {
+            // remove car from grid
+            let car = self.cars.remove(&car_id).unwrap();
+
+            // assert the car wasn't at a charging station
+            assert!(!car.position.is_at_charging_station());
+
+            // add event
+            let event = TickEvent::CarOutOfBattery(car.props.id, car.position);
+            self.tick_events.push(event);
+
+            // add car to list of cars to spawn
+            let car_to_spawn = CarToSpawn {
+                props: car.props,
+                position: None,
+                out_of_battery: Some((car.position, car.passengers)),
+            };
+            self.cars_to_spawn.push(car_to_spawn);
         }
 
         self.car_positions = next_positions;
-
-        let new_cars_count = self.cars_to_spawn.len();
 
         // spawn cars waiting to be spawned
         if !self.cars_to_spawn.is_empty() {
             let cars_to_spawn = std::mem::take(&mut self.cars_to_spawn);
             let mut rng = rand::thread_rng();
 
-            for (props, position) in cars_to_spawn {
-                let position = position.unwrap_or_else(|| self.random_empty_car_position(&mut rng));
+            for mut car_to_spawn in cars_to_spawn {
+                if let Some((out_of_battery_position, passengers)) = car_to_spawn.out_of_battery {
+                    // car ran out of battery on the road. look for the nearest
+                    // charging station with space, and spawn it there.
+                    let closest_charging_station = self
+                        .charging_stations
+                        .values()
+                        .filter(|cs| cs.has_space())
+                        .min_by_key(|cs| out_of_battery_position.distance_to(cs.entrance));
 
-                let car = Car::new(props, position);
-                self.car_positions.insert(position, car.id());
-                self.cars.insert(car.id(), car);
+                    let Some(closest_charging_station) = closest_charging_station else {
+                        // no charging station has space. just put the car back
+                        // into self.cars_to_spawn for next tick
+
+                        // put this back (we partially moved it in let-some)
+                        car_to_spawn.out_of_battery = Some((out_of_battery_position, passengers));
+
+                        self.cars_to_spawn.push(car_to_spawn);
+                        continue;
+                    };
+
+                    // spawn the car at the charging station
+                    let position = CarPosition::at_charging_station(closest_charging_station);
+                    let mut car = Car::new(car_to_spawn.props, position, 0.0);
+                    car.passengers = passengers;
+
+                    // self.car_positions.insert(position, car.id());
+                    // self.cars.insert(car.id(), car);
+                    self.spawn_car(car);
+                    continue;
+                }
+
+                let pos_is_taken = |pos: &_| self.car_positions.contains_key(pos);
+                let car_position = car_to_spawn.position(&mut rng, pos_is_taken);
+                let car = Car::new(car_to_spawn.props, car_position, 0.3);
+
+                // self.car_positions.insert(car_position, car.id());
+                // self.cars.insert(car.id(), car);
+                self.spawn_car(car);
             }
 
-            self.cars.shrink_to_fit();
+            // self.cars.shrink_to_fit();
         }
 
         // check we didn't lose any cars in the process
-        assert_eq!(cars_count + new_cars_count, self.cars.len());
-        assert_eq!(self.car_positions.len(), self.cars.len());
+        assert_eq!(
+            cars_count + new_cars_count,
+            self.cars.len() + self.cars_to_spawn.len()
+        );
+        assert_eq!(self.car_positions.len(), self.cars.len(),
+        "car_positions.len() != self.cars.len() | cars_count={cars_count}, new_cars_count={new_cars_count}");
+
+        // check all charging_station.cars are in sync with self.cars
+        for cs in self.charging_stations.values() {
+            for car_id in &cs.cars {
+                assert!(self.cars.contains_key(car_id));
+            }
+        }
+        for car in self.cars.values() {
+            if car.position.is_at_charging_station() {
+                let cs_id = car.position.in_charging_station.unwrap();
+                let cs = self.charging_stations.get(&cs_id).unwrap();
+
+                assert!(cs.cars.contains(&car.id()));
+            }
+        }
     }
 
     fn car_remove_pick_up_commands(&mut self, car_id: CarId) {
@@ -459,32 +651,39 @@ impl Grid {
         });
     }
 
-    fn car_next_position(&mut self, car_id: CarId, decision: CarDecision) -> CarPosition {
-        // note: does NOT update car position! only calculates the next position
-
-        let car = self.car(car_id);
-
-        // cars can only move every "speed" ticks
-        if car.ticks_since_last_movement < car.props.speed {
-            return car.position;
+    fn spawn_car(&mut self, car: Car) {
+        let prev_car = self.car_positions.insert(car.position, car.id());
+        if let Some(prev_car) = prev_car {
+            panic!(
+                "{id:?} tried to spawn at {pos:?} even though {prev_id:?} was already there",
+                id = car.id(),
+                pos = car.position,
+                prev_id = prev_car
+            );
         }
 
-        // calculate next position, using decision if needed
-        let old_position = car.position;
-        let next_position = car.position.next();
-        let next_position = match next_position {
-            NextCarPosition::OnlyStraight(next) => next,
-            NextCarPosition::MustChoose => old_position.take_decision(decision),
-        };
+        // if it's being spawned in a charging station,
+        // tell the cs it has a car now
+        if let Some(cs_id) = car.position.in_charging_station {
+            let cs = self.charging_stations.get_mut(&cs_id).unwrap();
+            cs.cars.push(car.id());
+        }
 
-        assert_ne!(old_position, next_position, "car turned but stayed still");
-        next_position
+        let dupe_car = self.cars.insert(car.id(), car);
+        if let Some(dupe_car) = dupe_car {
+            panic!(
+                "Tried to add {id:?} to grid.cars but it was already there",
+                id = dupe_car.id()
+            );
+        }
     }
 
     fn tick_passengers(&mut self) {
         // spawn passengers
         let mut rng = rand::thread_rng();
-        while rng.gen::<f32>() < self.opts.passenger_spawn_rate {
+        while self.waiting_passengers.len() < self.opts.max_passengers
+            && rng.gen::<f32>() < self.opts.passenger_spawn_rate
+        {
             let passenger = loop {
                 let passenger = Passenger::random(&mut rng, self.ticks_passed);
 
@@ -492,7 +691,11 @@ impl Grid {
                 let passenger_start_is_taken = self
                     .waiting_passenger_positions
                     .contains_key(&passenger.start);
-                if !passenger_start_is_taken {
+                // also don't spawn one if there is a charging station there
+                let passenger_start_is_charging_station =
+                    self.charging_station_entrance_at(passenger.start).is_some();
+
+                if !passenger_start_is_taken && !passenger_start_is_charging_station {
                     break passenger;
                 }
             };
@@ -547,6 +750,7 @@ impl Grid {
                             car.passengers.push(car_passenger);
 
                             print!("Car picked up passenger! ");
+                            std::io::stdout().flush().unwrap();
                         }
                     }
                 }

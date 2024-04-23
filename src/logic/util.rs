@@ -1,17 +1,19 @@
+use gxhash::GxBuildHasher;
+use indexmap::{IndexMap, IndexSet};
 use pyo3::prelude::*;
 use rand::Rng;
 
 use super::{car::CarDecision, grid::Grid};
 
-pub type HashMap<K, V> = gxhash::GxHashMap<K, V>;
-pub type HashSet<K> = gxhash::GxHashSet<K>;
+pub type HashMap<K, V> = IndexMap<K, V, GxBuildHasher>;
+pub type HashSet<K> = IndexSet<K, GxBuildHasher>;
 
 pub fn hashmap_with_capacity<K, V>(capacity: usize) -> HashMap<K, V> {
-    HashMap::with_capacity_and_hasher(capacity, gxhash::GxBuildHasher::default())
+    HashMap::with_capacity_and_hasher(capacity, GxBuildHasher::default())
 }
 
 pub fn hashset_with_capacity<K>(capacity: usize) -> HashSet<K> {
-    HashSet::with_capacity_and_hasher(capacity, gxhash::GxBuildHasher::default())
+    HashSet::with_capacity_and_hasher(capacity, GxBuildHasher::default())
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -202,6 +204,10 @@ impl RoadSection {
         }
     }
 
+    pub fn get_invalid() -> Self {
+        Self::get_raw(Direction::Up, -1, -1)
+    }
+
     pub fn all() -> Vec<Self> {
         let mut all = vec![];
 
@@ -326,6 +332,7 @@ impl RoadSection {
             CarDecision::GoStraight => self.go_straight(),
             CarDecision::TurnRight => self.turn(true),
             CarDecision::TurnLeft => self.turn(false),
+            CarDecision::ChargeBattery => todo!("Is this ever called?"),
         }
     }
 
@@ -342,11 +349,7 @@ impl RoadSection {
             }
         }
 
-        if possible_decisions.is_empty() {
-            println!("decisions list is empty");
-            return self.possible_decisions();
-        }
-
+        assert!(!possible_decisions.is_empty());
         possible_decisions
     }
 

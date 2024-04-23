@@ -1,10 +1,9 @@
-use std::{cell::RefCell, collections::VecDeque, hash::Hash, ops::Deref};
+use std::{collections::VecDeque, hash::Hash};
 
 use pathfinding::directed::astar::astar;
 
 use super::{
-    car::{Car, CarDecision, CarPosition},
-    grid::{Grid, LightState}, util::RoadSection,
+    car::{CarDecision, CarPosition}, util::RoadSection,
 };
 
 #[derive(Clone, Debug)]
@@ -17,10 +16,12 @@ pub struct Path {
     pub destination: CarPosition,
 
     pub cost: usize,
+
+    pub wants_to_charge: bool,
 }
 
 impl Path {
-    pub fn find<'g>(start: CarPosition, destination: CarPosition, speed: usize) -> Self {
+    pub fn find(start: CarPosition, destination: CarPosition, speed: usize) -> Self {
         let graph = Graph {
             // grid,
             start,
@@ -63,20 +64,13 @@ impl Path {
             sections,
             destination,
             cost,
+            wants_to_charge: false,
         }
     }
 
     pub fn distance(start: CarPosition, end: CarPosition, speed: usize) -> usize {
         let path = Self::find(start, end, speed);
         path.cost
-    }
-
-    pub fn pop_next_decision(&mut self) -> Option<CarDecision> {
-        // returns None if we already arrived
-        let current_section = self.sections.pop_front().unwrap();
-        let next_section = self.sections.front()?;
-        let decision = current_section.decision_to_go_to(*next_section).unwrap();
-        Some(decision)
     }
 
     pub fn next_decision(&self) -> Option<CarDecision> {
@@ -86,8 +80,6 @@ impl Path {
         current_section.decision_to_go_to(*next_section)
     }
 }
-
-type NodeIndex = usize;
 
 struct Graph {
     start: CarPosition,
@@ -109,14 +101,16 @@ impl Graph {
 
     fn successors(&self, node: &Node) -> Vec<(Node, usize)> {
         // fn successors(&'g self) -> impl Iterator<Item = (Node, usize)> {
-        let possible_decisions = node.section().possible_decisions();
+        let possible_decisions = node.car_pos.possible_decisions();
 
         let roads = possible_decisions
             .into_iter()
+            .filter(|d| *d != CarDecision::ChargeBattery)
             .map(|d| node.section().take_decision(d).unwrap());
         let car_positions = roads.map(|r| CarPosition {
             road_section: r,
             position_in_section: 0,
+            in_charging_station: None,
         });
         let nodes = car_positions.map(|p| {
             let ticks_after_parent = self.ticks_to(node, p);
@@ -210,7 +204,7 @@ impl Graph {
     // }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct Node {
     car_pos: CarPosition,
 
@@ -231,24 +225,3 @@ impl Node {
         self.car_pos.position_in_section <= destination.position_in_section
     }
 }
-
-// astar() wants Node to be Eq + Hash + Clone
-// can't #[derive] them cause Grid doesn't implement them
-
-impl Hash for Node {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.car_pos.hash(state);
-        self.ticks_after_parent.hash(state);
-        self.ticks_after_start.hash(state);
-    }
-}
-
-impl PartialEq for Node {
-    fn eq(&self, other: &Self) -> bool {
-        self.car_pos == other.car_pos
-            && self.ticks_after_parent == other.ticks_after_parent
-            && self.ticks_after_start == other.ticks_after_start
-    }
-}
-
-impl Eq for Node {}

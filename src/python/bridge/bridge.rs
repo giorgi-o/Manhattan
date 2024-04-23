@@ -1,36 +1,33 @@
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use pyo3::{prelude::*, types::PyList};
 
 use crate::{
     logic::{
-        car_agent::AgentAction,
-        grid::{Grid, GridOpts},
-        passenger::PassengerId,
-        util::Direction,
+        car::CarPosition, car_agent::AgentAction, ev::ChargingStationId, grid::{Grid, GridOpts}, util::Direction
     },
     render::render_main::GridLock,
 };
 
 use super::{
     err_handling::UnwrapPyErr,
-    py_grid::{PyCar, PyCarType, PyGridState, PyPassenger},
+    py_grid::{PyCarType, PyChargingStation, PyCoords, PyGridState, PyPassenger},
 };
 
-static MAIN_MODULE: OnceLock<Py<PyAny>> = OnceLock::new();
+static MAIN_MODULE: OnceLock<Py<PyModule>> = OnceLock::new();
 
 pub fn initialise_python() {
     pyo3::prepare_freethreaded_python();
 
-    let res = Python::with_gil(|py| -> PyResult<()> {
-        // find "manhattan" dir, regardless of cwd
-        let exe_path = std::env::current_exe().unwrap();
-        #[rustfmt::skip]
-        let manhattan_dir = exe_path
-            .parent().unwrap() // debug/release
-            .parent().unwrap() // target
-            .parent().unwrap(); // manhattan
+    // find "manhattan" dir, regardless of cwd
+    let exe_path = std::env::current_exe().unwrap();
+    #[rustfmt::skip]
+    let manhattan_dir = exe_path
+        .parent().unwrap() // debug/release
+        .parent().unwrap() // target
+        .parent().unwrap(); // manhattan
 
+    let res = Python::with_gil(|py| -> PyResult<()> {
         // add src/python/src to sys.path
         let src_dir = manhattan_dir.join("src").join("python").join("src");
         let sys = py.import_bound("sys")?;
@@ -39,7 +36,7 @@ pub fn initialise_python() {
 
         // import main
         let main = py.import_bound("main")?;
-        let main = main.to_object(py);
+        let main = main.unbind();
         MAIN_MODULE.set(main).unwrap();
 
         Ok(())
@@ -48,10 +45,9 @@ pub fn initialise_python() {
     res.unwrap_py();
 }
 
-pub fn main_module(py: Python<'_>) -> &PyModule {
+pub fn main_module<'py>(py: Python<'py>) -> &Bound<'py, PyModule> {
     let main = MAIN_MODULE.get().expect("Main module not imported!");
-    let main = main.downcast_bound::<PyModule>(py).unwrap();
-    main.as_gil_ref()
+    main.bind(py)
 }
 
 pub fn start_python() {
@@ -83,16 +79,26 @@ fn grid_dimensions() -> (usize, usize) {
     (Grid::VERTICAL_ROADS, Grid::HORIZONTAL_ROADS)
 }
 
-fn exported_python_module(py: Python<'_>) -> PyResult<&PyModule> {
-    let module = PyModule::new(py, "rust")?;
+#[pyfunction]
+fn calculate_distance(a: PyCoords, b: PyCoords) -> usize {
+    let a: CarPosition = a.into();
+    let b: CarPosition = b.into();
+
+    a.distance_to(b)
+}
+
+fn exported_python_module<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
+    let module = PyModule::new_bound(py, "rust")?;
 
     module.add_class::<PyGridEnv>()?;
     module.add_class::<GridOpts>()?;
     module.add_class::<PyAction>()?;
     module.add_class::<Direction>()?;
     module.add_class::<PyCarType>()?;
+    module.add_class::<CarPosition>()?;
 
-    module.add_function(wrap_pyfunction!(grid_dimensions, module)?)?;
+    module.add_function(wrap_pyfunction!(grid_dimensions, &module)?)?;
+    module.add_function(wrap_pyfunction!(calculate_distance, &module)?)?;
 
     Ok(module)
 }
@@ -188,6 +194,20 @@ pub struct PyAction {
     drop_off_passenger: Option<PyPassenger>,
     #[pyo3(get)]
     head_towards: Option<Direction>,
+    #[pyo3(get)]
+    charge_battery: Option<ChargingStationId>,
+}
+
+impl Default for PyAction {
+    fn default() -> Self {
+        Self {
+            raw: None,
+            pick_up_passenger: None,
+            drop_off_passenger: None,
+            head_towards: None,
+            charge_battery: None,
+        }
+    }
 }
 
 #[pymethods]
@@ -197,8 +217,8 @@ impl PyAction {
         Self {
             raw,
             pick_up_passenger: Some(passenger),
-            drop_off_passenger: None,
-            head_towards: None,
+            ..Default::default()
+            
         }
     }
 
@@ -206,9 +226,8 @@ impl PyAction {
     fn drop_off_passenger(passenger: PyPassenger, raw: RawAction) -> Self {
         Self {
             raw,
-            pick_up_passenger: None,
             drop_off_passenger: Some(passenger),
-            head_towards: None,
+            ..Default::default()
         }
     }
 
@@ -216,9 +235,17 @@ impl PyAction {
     fn head_towards(dir: Direction, raw: RawAction) -> Self {
         Self {
             raw,
-            pick_up_passenger: None,
-            drop_off_passenger: None,
             head_towards: Some(dir),
+            ..Default::default()
+        }
+    }
+
+    #[staticmethod]
+    fn charge_battery(charging_station: PyChargingStation, raw: RawAction) -> Self {
+        Self {
+            raw,
+            charge_battery: Some(charging_station.id),
+            ..Default::default()
         }
     }
 
@@ -227,6 +254,7 @@ impl PyAction {
         self.pick_up_passenger.is_some().then(|| somes += 1);
         self.drop_off_passenger.is_some().then(|| somes += 1);
         self.head_towards.is_some().then(|| somes += 1);
+        self.charge_battery.is_some().then(|| somes += 1);
         assert_eq!(somes, 1);
     }
 
@@ -243,6 +271,11 @@ impl PyAction {
     fn is_head_towards(&self) -> bool {
         self.assert_valid();
         self.head_towards.is_some()
+    }
+
+    fn is_charge(&self) -> bool {
+        self.assert_valid();
+        self.charge_battery.is_some()
     }
 
     fn __eq__(&self, other: &Self) -> bool {
@@ -271,14 +304,18 @@ impl From<PyAction> for AgentAction {
 
 impl From<&PyAction> for AgentAction {
     fn from(py_action: &PyAction) -> Self {
+        py_action.assert_valid();
+
         if let Some(passenger) = &py_action.pick_up_passenger {
             Self::PickUp(passenger.id)
         } else if let Some(passenger) = &py_action.drop_off_passenger {
             Self::DropOff(passenger.id)
         } else if let Some(head_towards) = py_action.head_towards {
             Self::HeadTowards(head_towards)
+        } else if let Some(charge_battery) = py_action.charge_battery {
+            Self::ChargeBattery(charge_battery)
         } else {
-            panic!("invalid PyAction (all None)")
+            unreachable!()
         }
     }
 }

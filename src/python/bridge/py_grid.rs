@@ -1,7 +1,10 @@
+use std::collections::BinaryHeap;
+
 use pyo3::prelude::*;
 
 use crate::logic::{
     car::{Car, CarId, CarPassenger, CarPosition, NextCarPosition},
+    ev::{ChargingStation, ChargingStationId},
     grid::{Grid, GridOpts, TickEvent},
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
@@ -30,11 +33,16 @@ pub struct PyGridState {
     other_cars: Vec<PyCar>,
     #[pyo3(get)]
     idle_passengers: Vec<PyPassenger>,
+    #[pyo3(get)]
+    charging_stations: Vec<PyChargingStation>,
 
     #[pyo3(get)]
     ticks_passed: usize,
     #[pyo3(get)]
     events: PyTickEvents,
+
+    car_radius: usize,
+    passenger_radius: usize,
 }
 
 #[pymethods]
@@ -72,6 +80,8 @@ pub struct PyCoords {
     road: usize,
     #[pyo3(get)]
     section: usize,
+    #[pyo3(get)]
+    in_charging_station: bool,
 
     // for converting to/from CarPosition
     pos_in_section: Option<usize>,
@@ -84,7 +94,7 @@ pub enum PyCarType {
     Npc,
 }
 
-#[derive(Hash, Clone, Debug)]
+#[derive(Clone, Debug)]
 #[pyclass]
 pub struct PyCar {
     pub id: CarId,
@@ -95,6 +105,8 @@ pub struct PyCar {
     pos: PyCoords,
     #[pyo3(get)]
     passengers: Vec<PyPassenger>,
+    #[pyo3(get)]
+    battery: f32,
     #[pyo3(get)]
     recent_actions: Vec<PyAction>,
 }
@@ -122,7 +134,7 @@ pub struct PyPassenger {
     distance_to_destination: usize,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Default, Debug)]
+#[derive(PartialEq, Eq, Clone, Default, Debug)]
 #[pyclass]
 pub struct PyTickEvents {
     #[pyo3(get)]
@@ -131,6 +143,26 @@ pub struct PyTickEvents {
     car_picked_up_passenger: Vec<(PyCar, PyPassenger, PyCoords)>,
     #[pyo3(get)]
     car_dropped_off_passenger: Vec<(PyCar, PyPassenger, PyCoords)>,
+    #[pyo3(get)]
+    // don't store pycar for car_out_of_battery because it requires
+    // building a PyCar from a CarToSpawn, which is too much effort
+    // knowing that python only cares about the vec length atm.
+    car_out_of_battery: Vec<(CarId, PyCoords)>,
+}
+
+#[derive(PartialEq, Clone, Debug)]
+#[pyclass]
+pub struct PyChargingStation {
+    pub id: ChargingStationId,
+
+    #[pyo3(get)]
+    pos: PyCoords,
+    #[pyo3(get)]
+    capacity: usize,
+    #[pyo3(get)]
+    charging_speed: f32,
+    #[pyo3(get)]
+    cars: Vec<PyCar>,
 }
 
 impl PyGridState {
@@ -153,12 +185,19 @@ impl PyGridState {
             .map(|car| PyCar::build(car, ticks_passed))
             .collect::<Vec<_>>();
 
+        // === process charging stations ===
+        let charging_stations = grid
+            .charging_stations
+            .values()
+            .map(|station| PyChargingStation::build(station, grid))
+            .collect::<Vec<_>>();
+
         // === process events ===
         let events = PyTickEvents::build(grid);
 
         // === return ===
         Self {
-            opts: grid.opts,
+            opts: grid.opts.clone(),
             width: Grid::VERTICAL_ROADS,
             height: Grid::HORIZONTAL_ROADS,
 
@@ -167,9 +206,13 @@ impl PyGridState {
 
             other_cars: cars,
             idle_passengers,
+            charging_stations,
 
             ticks_passed,
             events,
+
+            car_radius: grid.opts.car_radius,
+            passenger_radius: grid.opts.passenger_radius,
         }
     }
 
@@ -191,15 +234,17 @@ impl PyGridState {
         this.can_turn = Some(can_turn);
 
         // sort passengers by closest to car
-        this.idle_passengers.sort_by_cached_key(|passenger| {
-            let path = pov_car.find_path(passenger.pos.into());
-            path.cost
-        });
+        // this.idle_passengers
+        // .sort_by_cached_key(|passenger| pov_car.position.distance_to(passenger.pos.into()));
+        let val = |passenger: &PyPassenger| pov_car.position.distance_to(passenger.pos.into());
+        this.idle_passengers =
+            lowest_n_sorted(this.idle_passengers.into_iter(), self.passenger_radius, val);
 
         // sort cars by closest to pov car
-        this.other_cars.sort_by_cached_key(|car| {
-            Path::distance(pov_car.position, car.pos.into(), Grid::CAR_SPEED);
-        });
+        // this.other_cars
+            // .sort_by_cached_key(|car| pov_car.position.distance_to(car.pos.into()));
+        let val = |car: &PyCar| pov_car.position.distance_to(car.pos.into());
+        this.other_cars = lowest_n_sorted(this.other_cars.into_iter(), self.car_radius, val);
 
         // only include events by this car
         this.events
@@ -208,9 +253,70 @@ impl PyGridState {
         this.events
             .car_dropped_off_passenger
             .retain(|(car, _, _)| car.id == pov_car.id());
+        this.events
+            .car_out_of_battery
+            .retain(|(car_id, _)| *car_id == pov_car.id());
+
+        // sort charging stations by closest to pov car
+        this.charging_stations
+            .sort_by_cached_key(|station| pov_car.position.distance_to(station.pos.into()));
 
         this
     }
+}
+
+pub fn lowest_n_sorted<I, F, V>(iter: I, n: usize, mut val: F) -> Vec<I::Item>
+where
+    I: Iterator,
+    I::Item: PartialEq + Eq,
+    F: FnMut(&I::Item) -> V,
+    V: Ord + PartialEq + Eq,
+{
+    #[derive(PartialEq, Eq)]
+    struct Item<T, V>
+    where
+        T: PartialEq + Eq,
+        V: Ord + PartialEq + Eq,
+    {
+        item: T,
+        value: V,
+    }
+
+    impl<T, V> PartialOrd for Item<T, V>
+    where
+        T: PartialEq + Eq,
+        V: Ord + PartialEq + Eq,
+    {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            self.value.partial_cmp(&other.value)
+        }
+    }
+
+    impl<T, V> Ord for Item<T, V>
+    where
+        T: PartialEq + Eq,
+        V: Ord + PartialEq + Eq,
+    {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.value.cmp(&other.value)
+        }
+    }
+
+    let mut heap: BinaryHeap<Item<I::Item, V>> = BinaryHeap::with_capacity(n);
+
+    for item in iter {
+        let item = Item {
+            value: val(&item),
+            item,
+        };
+        heap.push(item);
+
+        if heap.len() > n {
+            heap.pop();
+        }
+    }
+
+    heap.into_iter().map(|item| item.item).collect()
 }
 
 impl PyPassenger {
@@ -251,6 +357,7 @@ impl From<CarPosition> for PyCoords {
             direction: pos.road_section.direction,
             road: pos.road_section.road(),
             section: pos.road_section.section(),
+            in_charging_station: pos.is_at_charging_station(),
 
             pos_in_section: Some(pos.position_in_section),
         }
@@ -272,6 +379,7 @@ impl From<PyCoords> for CarPosition {
         CarPosition {
             road_section: pos.into(),
             position_in_section: pos.pos_in_section.expect("No car pos in section info"),
+            in_charging_station: None,
         }
     }
 }
@@ -301,7 +409,27 @@ impl PyCar {
             ty,
             pos: car.position.into(),
             passengers,
+            battery: car.battery.get(),
             recent_actions,
+        }
+    }
+}
+
+impl PyChargingStation {
+    pub fn build(station: &ChargingStation, grid: &Grid) -> Self {
+        let cars = station
+            .cars
+            .iter()
+            .map(|car_id| grid.car(*car_id))
+            .map(|car| PyCar::build(car, grid.ticks_passed))
+            .collect::<Vec<_>>();
+
+        Self {
+            id: station.id,
+            pos: station.entrance.into(),
+            capacity: station.capacity,
+            charging_speed: station.charging_speed.get(),
+            cars,
         }
     }
 }
@@ -312,6 +440,7 @@ impl PyTickEvents {
             passenger_spawned: vec![],
             car_picked_up_passenger: vec![],
             car_dropped_off_passenger: vec![],
+            car_out_of_battery: vec![],
         };
 
         for event in &grid.tick_events {
@@ -356,6 +485,11 @@ impl PyTickEvents {
                     this.car_dropped_off_passenger
                         .push((py_car, py_passenger, py_pos));
                 }
+
+                TickEvent::CarOutOfBattery(car_id, out_of_battery_pos) => {
+                    let py_pos = (*out_of_battery_pos).into();
+                    this.car_out_of_battery.push((*car_id, py_pos));
+                }
             }
         }
 
@@ -375,5 +509,12 @@ impl Eq for PyCar {}
 impl PyCar {
     fn __eq__(&self, other: &PyCar) -> bool {
         self == other
+    }
+}
+
+#[pymethods]
+impl PyChargingStation {
+    fn is_full(&self) -> bool {
+        self.cars.len() == self.capacity
     }
 }

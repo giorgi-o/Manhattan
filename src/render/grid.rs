@@ -1,9 +1,13 @@
 use macroquad::prelude::*;
 
-use crate::logic::{grid::{Grid, LightState}, util::{Direction, Orientation, RoadSection}};
+use crate::logic::{
+    grid::{Grid, LightState},
+    util::{Direction, Orientation, RoadSection},
+};
 
 use super::{
     car::CarRenderer,
+    ev::ChargingStationRenderer,
     passenger::PassengerRenderer,
     util::{Lengths, ToLengths},
 };
@@ -40,6 +44,10 @@ impl<'g> GridRenderer<'g> {
 
         for passenger in self.grid.waiting_passengers() {
             PassengerRenderer::render_waiting(self, passenger);
+        }
+
+        for charging_station in self.grid.charging_stations.values() {
+            ChargingStationRenderer::render(self, charging_station);
         }
     }
 

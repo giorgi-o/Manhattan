@@ -41,13 +41,14 @@ def dqn(env: GridVecEnv) -> None:
         net = Net(
             state_shape=space_info.observation_info.obs_shape,
             action_shape=space_info.action_info.action_shape,
-            hidden_sizes=[256, 256, 256],
+            hidden_sizes=[256, 256],
             device=device,
             softmax=True,
             num_atoms=51,
         ).to(device)
 
-    optim = torch.optim.Adam(net.parameters(), lr=1e-3)
+    with LogStep("Creating optimizer..."):
+        optim = torch.optim.Adam(net.parameters(), lr=1e-3)
     
     with LogStep("Creating DQN policy..."):
         policy = RainbowPolicy(
@@ -89,13 +90,16 @@ def dqn(env: GridVecEnv) -> None:
     def train_fn(epoch: int, env_step: int) -> None:
         # eps annnealing, just a demo
         eps = 0.1
+        # eps = 0.0
         if env_step <= 10000:
             policy.set_eps(eps)
         elif env_step <= 50000:
+            # policy.set_eps(0)
             eps = eps - (env_step - 10000) / 40000 * (0.9 * eps)
             policy.set_eps(eps)
         else:
-            policy.set_eps(0.1 * eps)
+            # policy.set_eps(0.1 * eps)
+            policy.set_eps(0)
 
     def test_fn(epoch: int, env_step: int | None) -> None:
         eps = 0.05
@@ -108,7 +112,7 @@ def dqn(env: GridVecEnv) -> None:
             train_collector=collector,
             max_epoch=2000,
             step_per_epoch=100000,
-            step_per_collect=10,
+            step_per_collect=30,
             episode_per_test=env.num_envs,
             batch_size=batch_size,
             update_per_step=0.1,

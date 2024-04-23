@@ -1,7 +1,8 @@
 use macroquad::prelude::*;
 
 use crate::logic::{
-    car::{Car, CarPosition}, util::{Direction, Orientation, RoadSection},
+    car::{Car, CarPosition},
+    util::{Direction, Orientation, RoadSection},
 };
 
 use super::{
@@ -54,6 +55,11 @@ impl<'g> CarRenderer<'g> {
     }
 
     pub fn render_car(&self) {
+        // if in charging station, skip
+        if self.car.position.is_at_charging_station() {
+            return;
+        }
+
         let rect = self.rect();
         draw_rectangle(rect.x, rect.y, rect.w, rect.h, self.car.props.colour);
 
@@ -165,7 +171,7 @@ impl<'g> CarRenderer<'g> {
         while let Some(path_section) = sections.next() {
             let end = match sections.peek() {
                 Some(next_section) => {
-                PathLineBound::SectionsIntersection(((*path_section), **next_section))
+                    PathLineBound::SectionsIntersection(((*path_section), **next_section))
                 }
                 None => PathLineBound::Car(path.destination),
             };
@@ -253,9 +259,17 @@ impl<'g> CarRenderer<'g> {
     }
 
     fn render_passenger_count(&self) {
+        // also renders battery%
+
+        if self.car.props.agent.is_npc() {
+            return;
+        }
+
         let rect = self.rect();
         let font_size = rect.w.min(rect.h) / 2.0;
         let center = rect.center();
+
+        let mut text = format!("{:.0}%", self.car.battery.get() * 100.);
 
         let riding_passengers = self
             .car
@@ -263,11 +277,10 @@ impl<'g> CarRenderer<'g> {
             .iter()
             .filter(|p| p.is_dropping_off())
             .count();
-        if riding_passengers == 0 {
-            return;
+        if riding_passengers > 0 {
+            text += format!(" {riding_passengers}P").as_str();
         }
 
-        let text = riding_passengers.to_string();
         draw_text(&text, center.x, center.y, font_size, BLACK);
     }
 }

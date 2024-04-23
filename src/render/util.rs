@@ -2,7 +2,15 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use macroquad::prelude::*;
 
-use crate::logic::util::Orientation;
+use crate::{
+    logic::{
+        car::CarPosition,
+        util::{Direction, Orientation},
+    },
+    render::grid::RoadRenderer,
+};
+
+use super::{car::CarRenderer, grid::GridRenderer};
 
 // util struct for abstracting over whether we are in horizontal or vertical
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -240,5 +248,51 @@ impl Line {
         let y = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / y_denom;
 
         Some((x, y))
+    }
+}
+
+pub struct RoadCoords {
+    position: CarPosition,
+    x: f32,
+    y: f32,
+    sidewalk_direction: Direction,
+}
+
+impl RoadCoords {
+    pub fn new(position: CarPosition, grid: &GridRenderer) -> Self {
+        // get the rectangle of the car
+        let road = grid.road_at(position.road_section);
+        let car_rect = CarRenderer::rect_from_position(position, &road);
+
+        // get the center of the rectangle
+        let x = car_rect.left() + car_rect.w / 2.0;
+        let y = car_rect.top() + car_rect.h / 2.0;
+
+        // get the direction towards the sidewalk
+        let road_direction = position.road_section.direction;
+        let sidewalk_direction = match CarRenderer::ENGLAND_MODE {
+            true => road_direction.counterclockwise(),
+            false => road_direction.clockwise(),
+        };
+
+        Self {
+            position,
+            x,
+            y,
+            sidewalk_direction,
+        }
+    }
+
+    pub fn offset_coords(&self, offset: f32) -> (f32, f32) {
+        match self.sidewalk_direction {
+            Direction::Up => (self.x, self.y - offset),
+            Direction::Down => (self.x, self.y + offset),
+            Direction::Left => (self.x - offset, self.y),
+            Direction::Right => (self.x + offset, self.y),
+        }
+    }
+
+    pub fn sidewalk_coords(&self, offset: f32) -> (f32, f32) {
+        self.offset_coords(RoadRenderer::WIDTH / 2.0 + offset)
     }
 }

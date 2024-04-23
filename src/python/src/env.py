@@ -23,8 +23,6 @@ PyAction = NewType("PyAction", Any)  # type: ignore
 
 @dataclass
 class EnvOpts:
-    passenger_radius: int
-    car_radius: int
     render: bool
 
 
@@ -39,9 +37,11 @@ class GridVecEnv(BaseVectorEnv):
         self.grid_opts = grid_opts
         self.env_opts = env_opts
 
-        self.passenger_radius = env_opts.passenger_radius
-        self.car_radius = env_opts.car_radius
+        self.passenger_radius = grid_opts.passenger_radius
+        self.car_radius = grid_opts.car_radius
         self.passengers_per_car = grid_opts.passengers_per_car
+        self.charging_station_count = len(grid_opts.charging_stations)
+        self.charging_station_capacity = grid_opts.charging_station_capacity
         self.num_envs = grid_opts.agent_car_count
         self.width, self.height = rust.grid_dimensions()
 
@@ -112,7 +112,8 @@ class GridVecEnv(BaseVectorEnv):
         coords_ospc = [
             self.width,  # x
             self.height,  # y
-            4,  # N/S/E/W direction
+            # 4,  # N/S/E/W direction
+            self.MAX_DISTANCE + 1,  # distance to pov
         ]
 
         car_passenger_ospc = [
@@ -136,13 +137,30 @@ class GridVecEnv(BaseVectorEnv):
         for _ in range(self.passenger_radius):
             idle_passengers_ospc.extend(idle_passenger_ospc)
 
+        in_charging_station_ospc = [2]
+        battery_ospc = [101]
+
         car_ospc = [
             *coords_ospc,  # pos
+            *in_charging_station_ospc,
+            *battery_ospc,  # battery
             *car_passengers_ospc,  # passengers
         ]
         cars_ospc: list[int] = []
         for _ in range(self.car_radius):
             cars_ospc.extend(car_ospc)
+
+        charging_station_slot_ospc = [
+            2,  # is available
+            2,  # % charged of car that's there
+        ]
+        charging_station_slots_ospc: list[int] = charging_station_slot_ospc * self.charging_station_capacity
+
+        charging_station_ospc = [
+            *coords_ospc,  # pos
+            *charging_station_slots_ospc,  # slots/other cars already there
+        ]
+        charging_stations_ospc: list[int] = charging_station_ospc * self.charging_station_count
 
         can_turn_spc = [2]  # whether the car's action this tick has an effect
         total_passengers_spc = [50]  # how many passengers are on the grid
@@ -155,38 +173,60 @@ class GridVecEnv(BaseVectorEnv):
             *cars_ospc,
             *idle_passengers_ospc,
             *prev_action_spc,
+            *charging_stations_ospc,
         ]
 
-        low = np.zeros(len(all_spaces))
-        high = np.array(all_spaces) - 1
+        low = np.zeros(len(all_spaces), dtype=np.float32)
+        high = np.array(all_spaces, dtype=np.float32) - 1.0
 
-        return spaces.Box(low=low, high=high, dtype=np.int32)
+        return spaces.Box(low=low, high=high, dtype=np.float32)
 
     def build_action_space(self) -> gymnasium.spaces.Discrete:
-        # can pick passenger to drop off, pick up, or to head N/S/E/W
-        self.action_count = self.passengers_per_car + self.passenger_radius + 4
+        # can pick passenger to drop off, pick up, charge at nearest charging station or to head N/S/E/W
+        self.action_count = (
+            self.passengers_per_car  # drop off passenger
+            + self.passenger_radius  # pick up passenger
+            + 1  # go to nearest charging station
+            + 4  # head towards N/S/E/W
+        )
         return spaces.Discrete(self.action_count)
 
-    def parse_action(self, state: GridState, action: int) -> tuple[PyAction, bool]:
+    def parse_action(self, state: GridState, action: int) -> PyAction:
         Action = self.rust.PyAction
         Direction = self.rust.Direction
-        parsed_action = None
+        low = 0
 
         if action < self.passengers_per_car:
             # drop off passenger with that index
             idx = action
-            if idx < len(state.pov_car.passengers):
-                parsed_action = Action.drop_off_passenger(state.pov_car.passengers[idx], action)
+            assert idx < len(state.pov_car.passengers)
+            return Action.drop_off_passenger(state.pov_car.passengers[idx], action)
+        low += self.passengers_per_car
 
-        elif action < self.action_count - 4:
+        if action < low + self.passenger_radius:
             # pick up passenger
-            idx = action - self.passengers_per_car
-            can_pick_up_passengers = len(state.pov_car.passengers) < self.passengers_per_car
-            if idx < len(state.idle_passengers) and can_pick_up_passengers:
-                parsed_action = Action.pick_up_passenger(state.idle_passengers[idx], action)
+            idx = action - low
+            assert idx < len(state.idle_passengers)
 
-        else:
-            direction_idx = action - (self.action_count - 4)
+            can_pick_up_passengers = len(state.pov_car.passengers) < self.passengers_per_car
+            assert can_pick_up_passengers
+
+            idle_passenger = state.idle_passengers[idx]
+            return Action.pick_up_passenger(idle_passenger, action)
+        low += self.passenger_radius
+
+        if action < low + 1:
+            # go to charging station
+            idx = action - low
+            assert idx < len(state.charging_stations)
+
+            charging_station = state.charging_stations[idx]
+            return Action.charge_battery(charging_station, action)
+        low += 1
+
+        if action < low + 4:
+            # head towards direction
+            direction_idx = action - low
             direction = {
                 0: Direction.Up,
                 2: Direction.Down,
@@ -194,26 +234,29 @@ class GridVecEnv(BaseVectorEnv):
                 3: Direction.Left,
             }[direction_idx]
 
-            parsed_action = Action.head_towards(direction, action)
+            return Action.head_towards(direction, action)
 
-        assert parsed_action is not None
-        return parsed_action, True
-
+        raise ValueError(f"Invalid action {action}")
         # if parsed_action is not None:
         #     return parsed_action, True
         # else:
         #     return Action.head_towards(Direction.Up, action), False
 
-    def calculate_reward(self, state: GridState, action_valid: bool) -> float:
+    def calculate_reward(self, state: GridState, action_valid: bool = True) -> float:
         pov_car = state.pov_car
         reward = 0.0
 
-        # -1 for every passenger on the grid
-        # reward -= state.total_passenger_count()
+        total_passengers = state.total_passenger_count()
+        if total_passengers == 0:
+            # we win: +5000
+            reward += 5000
+        else:
+            # -1 for every passenger on the grid
+            reward -= state.total_passenger_count()
 
-        for passenger in chain(state.idle_passengers, state.pov_car.passengers):
-            # penalty of "time alive" / 100
-            reward -= passenger.ticks_since_request / 100
+        # for passenger in chain(state.idle_passengers, state.pov_car.passengers):
+        #     # penalty of "time alive" / 100
+        #     reward -= passenger.ticks_since_request / 100
 
         # +100 for every passenger dropped off
         reward += 100 * len(state.events.car_dropped_off_passenger)
@@ -221,47 +264,71 @@ class GridVecEnv(BaseVectorEnv):
         # +5 for every passenger picked up
         reward += 5 * len(state.events.car_picked_up_passenger)
 
-        # -50 if the action is invalid
-        if not action_valid:
-            reward -= 50
-        elif len(pov_car.recent_actions) > 0:
-            action = pov_car.recent_actions[0]
+        # -1000 if the car ran out of battery
+        reward -= 1000 * len(state.events.car_out_of_battery)
 
-            # -10 if action is head_towards
-            if action.is_head_towards():
-                reward -= 10
+        # if len(pov_car.recent_actions) > 0:
+        #     action = pov_car.recent_actions[0]
 
-            else:
-                # +3 if action is drop_off
-                if action.is_drop_off():
-                    reward += 3
+        #     # -10 if action is head_towards
+        #     if action.is_head_towards():
+        #         reward -= 10
 
-                # +3 for every consecutive time the agent picked this action
-                for prev_action in pov_car.recent_actions[1:2]:
-                    if prev_action == action:
-                        reward += 1
-                    else:
-                        break
+        #     else:
+        #         # +3 if action is drop_off
+        #         if action.is_drop_off():
+        #             reward += 3
+
+        #         # +3 for every consecutive time the agent picked this action
+        #         for prev_action in pov_car.recent_actions[1:2]:
+        #             if prev_action == action:
+        #                 reward += 3
+        #             else:
+        #                 break
+
+        # if pov_car.battery < 0.3:
+        #     if action.is_charge():
+        #         reward += 5
+        #     else:
+        #         reward -= 20
+
+        # if action.is_charge():
+        #     # +3 if car wants to charge when battery is <30%
+        #     if state.pov_car.battery < 0.13:
+        #         reward += 3
+
+        #     # +10 if car wants to keep charging if already doing so
+        #     if state.pov_car.pos.in_charging_station:
+        #         reward += 10
+
+        # else:
+        #     # -20 if battery is <30% and the car doesn't want to charge
+        #     if state.pov_car.battery < 0.30:
+        #         reward -= 20
+
+        # if pov_car.pos.in_charging_station:
+            # +0.5 if car is charging
+            # reward += 500.0
 
         if self.grid_opts.verbose:
             print(f"{reward:.1f}", end=" ", flush=True)
         return reward
 
-    def _parse_direction(self, direction) -> int:
-        Direction = self.rust.Direction
-        match direction:
-            case Direction.Up:
-                return 0
-            case Direction.Right:
-                return 1
-            case Direction.Down:
-                return 2
-            case Direction.Left:
-                return 3
-            case _:
-                raise ValueError(f"Invalid direction: {direction}")
+    # def _parse_direction(self, direction) -> int:
+    #     Direction = self.rust.Direction
+    #     match direction:
+    #         case Direction.Up:
+    #             return 0
+    #         case Direction.Right:
+    #             return 1
+    #         case Direction.Down:
+    #             return 2
+    #         case Direction.Left:
+    #             return 3
+    #         case _:
+    #             raise ValueError(f"Invalid direction: {direction}")
 
-    def _parse_coords(self, coords) -> list[int]:
+    def _parse_coords(self, coords, pov_pos) -> list[int | float]:
         Direction = self.rust.Direction
 
         horizontal = coords.direction in [Direction.Right, Direction.Left]
@@ -271,8 +338,10 @@ class GridVecEnv(BaseVectorEnv):
             x, y = (coords.road, coords.section)
         assert x < self.width and y < self.height
 
-        direction = self._parse_direction(coords.direction)
-        return [x, y, direction]
+        # direction = self._parse_direction(coords.direction)
+        distance_to_pov = self.rust.calculate_distance(coords, pov_pos)
+        distance_to_pov = min(distance_to_pov, self.MAX_DISTANCE)
+        return [x, y, distance_to_pov]
 
     def _null_coords(self) -> list[int]:
         return [0, 0, 0]
@@ -285,37 +354,37 @@ class GridVecEnv(BaseVectorEnv):
             0,  # time_since_request
         ]
 
-    def _parse_car_passengers(self, car) -> list[int]:
+    def _parse_car_passengers(self, car) -> list[int | float]:
         passengers = []
 
         for passenger in car.passengers:
             can_pick_up = len(car.passengers) < self.passengers_per_car
             parsed_passenger = [
                 can_pick_up,
-                *self._parse_coords(passenger.destination),  # destination
+                *self._parse_coords(passenger.destination, car.pos),  # destination
                 min(passenger.distance_to_destination, self.MAX_DISTANCE),  # distance_to_dest
                 min(passenger.ticks_since_request, self.MAX_TIME),  # time_since_request
             ]
-            passengers.append(parsed_passenger)
+            passengers.extend(parsed_passenger)
 
             if len(passengers) == self.passengers_per_car:
                 break
 
         null_passenger = self._null_passenger()
-        while len(passengers) < self.passengers_per_car:
-            passengers.append(null_passenger)
+        neurons_per_passenger = len(null_passenger)
+        while len(passengers) < self.passengers_per_car * neurons_per_passenger:
+            passengers.extend(null_passenger)
 
-        # return flattened passengers
-        return [item for sublist in passengers for item in sublist]
+        return passengers
 
-    def _parse_idle_passengers(self, idle_passengers) -> list[int]:
+    def _parse_idle_passengers(self, idle_passengers, pov_car) -> list[int | float]:
         parsed_idle_passengers = []
 
         for passenger in idle_passengers:
             parsed_idle_passenger = [
                 1,  # present
-                *self._parse_coords(passenger.pos),  # pos
-                *self._parse_coords(passenger.destination),  # destination
+                *self._parse_coords(passenger.pos, pov_car.pos),  # pos
+                *self._parse_coords(passenger.destination, pov_car.pos),  # destination
                 min(passenger.distance_to_destination, self.MAX_DISTANCE),  # distance_to_dest
                 min(passenger.ticks_since_request, self.MAX_TIME),  # time_since_request
             ]
@@ -336,9 +405,11 @@ class GridVecEnv(BaseVectorEnv):
 
         return flatten(parsed_idle_passengers)
 
-    def _parse_car(self, car) -> list[int]:
+    def _parse_car(self, car) -> list[int | float]:
         return [
-            *self._parse_coords(car.pos),  # pos
+            *self._parse_coords(car.pos, car.pos),  # pos
+            1 if car.pos.in_charging_station else 0,
+            car.battery * 100,
             *self._parse_car_passengers(car),
         ]
 
@@ -346,10 +417,12 @@ class GridVecEnv(BaseVectorEnv):
         passengers = [self._null_passenger()] * self.passengers_per_car
         return [
             *self._null_coords(),  # pos
+            0,  # in charging station
+            0,  # battery
             *flatten(passengers),
         ]
 
-    def _parse_cars(self, cars) -> list[int]:
+    def _parse_cars(self, cars) -> list[int | float]:
         cars = []
 
         for car in cars:
@@ -366,6 +439,26 @@ class GridVecEnv(BaseVectorEnv):
             cars.append(null_car)
 
         return flatten(cars)
+
+    def _parse_charging_station(self, charging_station, pov_car) -> list[int | float]:
+        slots = [0, 0] * self.charging_station_capacity
+        for i, car in enumerate(charging_station.cars):
+            i = i * 2
+            slots[i] = 1
+            slots[i + 1] = car.battery
+
+        return [
+            *self._parse_coords(charging_station.pos, pov_car.pos),  # pos
+            *slots,
+        ]
+
+    def _parse_charging_stations(self, state) -> list[int | float]:
+        # return [*self._parse_charging_station(cs, state.pov_car) for cs in state.charging_stations]
+        charging_stations = []
+        for cs in state.charging_stations:
+            charging_stations.extend(self._parse_charging_station(cs, state.pov_car))
+
+        return charging_stations
 
     def parse_observation(self, state: GridState) -> np.ndarray:
 
@@ -384,11 +477,12 @@ class GridVecEnv(BaseVectorEnv):
             total_passenger_count,
             *self._parse_car(state.pov_car),  # pov_car
             *self._parse_cars(state.other_cars),  # other_cars
-            *self._parse_idle_passengers(state.idle_passengers),  # idle_passengers
+            *self._parse_idle_passengers(state.idle_passengers, state.pov_car),  # idle_passengers
             *previous_actions,
+            *self._parse_charging_stations(state),
         ]
 
-        obs = np.array(obs_list, dtype=np.int32)
+        obs = np.array(obs_list, dtype=np.float32)
 
         assert self._observation_space.contains(obs)
         return obs
@@ -405,13 +499,39 @@ class GridVecEnv(BaseVectorEnv):
         offset += self.passengers_per_car
 
         # pick up actions
-        idle_passenger_count = min(len(state.idle_passengers), self.passenger_radius)
-        valid_actions[offset : offset + idle_passenger_count] = True
+        can_pick_up_passengers = passenger_count < self.passengers_per_car
+        if can_pick_up_passengers:
+            idle_passenger_count = min(len(state.idle_passengers), self.passenger_radius)
+            valid_actions[offset : offset + idle_passenger_count] = True
         offset += self.passenger_radius
+
+        # charging station actions
+        current_battery_level = state.pov_car.battery
+        is_in_charging_station = state.pov_car.pos.in_charging_station
+
+        if current_battery_level > 0.95:
+            pass  # battery is full, don't start charging
+        # elif current_battery_level < 0.1:
+        #     # hack: only allow charging
+        #     valid_actions[:] = False
+        #     valid_actions[offset] = True
+        elif is_in_charging_station:
+            # allow keep charging, but don't allow going to the other one
+            valid_actions[offset] = True
+        else:
+            for i, charging_station in enumerate(state.charging_stations):
+                if not charging_station.is_full():
+                    valid_actions[offset + i] = True
+                break  # tmp-ish: only allow charging at nearest charging station
+        if valid_actions[offset] == False:
+            print("Car can't go to cs!", flush=True)
+        offset += 1  # self.charging_station_count
 
         # head towards actions (always valid)
         valid_actions[offset : offset + 4] = True
+        offset += 4
 
+        assert offset == self.action_count
         return valid_actions
 
 
@@ -433,7 +553,7 @@ class GridEnvWorder(EnvWorker):
         self.rust = self.vec_env.rust
 
         self.action: PyAction | None = None
-        self.action_valid: bool = True
+        self.action_valid: bool = True  # note: unused
         self.old_obs: GridState | None = None
         self.new_obs: GridState | None = None
         self.reward = 0.0
@@ -458,7 +578,7 @@ class GridEnvWorder(EnvWorker):
             self.reset_called = False
 
             assert self.new_obs is not None  # since first tick already happened
-            self.action, self.action_valid = self.vec_env.parse_action(self.new_obs, int(action))
+            self.action = self.vec_env.parse_action(self.new_obs, int(action))
             self.vec_env.ready_for_tick(self.index)
 
     def recv(self) -> gym_new_venv_step_type | tuple[np.ndarray, dict]:
@@ -469,11 +589,14 @@ class GridEnvWorder(EnvWorker):
 
         info = {}
         parsed_new_obs = self.vec_env.parse_observation(self.new_obs)
+
+        # tmp: print car battery
+        # todo
+
         new_obs_action_mask = self.vec_env.action_mask(self.new_obs)
-        new_obs = Batch(
+        new_obs_batch = Batch(
             obs=parsed_new_obs,
             mask=new_obs_action_mask,
-
             # need to add a non-numpy attribute, otherwise when tianshou
             # tries to np.stack the observation batches together, it gets
             # confused and goes along the wrong axis (or something)
@@ -481,13 +604,13 @@ class GridEnvWorder(EnvWorker):
         )
 
         if self.reset_called:
-            return new_obs, info  # type: ignore
+            return new_obs_batch, info  # type: ignore
         else:
-            terminated = False
+            terminated = self.new_obs.total_passenger_count() == 0
             truncated = self.new_obs.ticks_passed >= self.vec_env.TICKS_PER_EPISODE
 
             return (  # type: ignore
-                new_obs,
+                new_obs_batch,
                 np.array(self.reward),
                 np.array(terminated),
                 np.array(truncated),

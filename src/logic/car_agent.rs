@@ -5,11 +5,12 @@ use crate::{
         py_grid::PyGridState,
     },
 };
-use rand::{seq::SliceRandom, Rng};
+use rand::seq::SliceRandom;
 use std::{io::Write, sync::Mutex};
 
 use super::{
-    car::{Car, CarDecision, CarId, CarPassenger, CarPosition},
+    car::{CarDecision, CarId, CarPassenger, CarPosition},
+    ev::ChargingStationId,
     grid::Grid,
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
@@ -54,16 +55,50 @@ impl<T: CarPathAgent> CarAgent for T {
             return RandomTurns {}.get_turn(grid, car_id);
         };
 
-        if path.next_decision().is_none() {
-            // bug
-            return RandomTurns {}.get_turn(grid, car_id);
-        }
+        // if path.next_decision().is_none() {
+        //     // bug
+        //     // return RandomTurns {}.get_turn(grid, car_id);
+        //     panic!("path has no next decision");
+        // }
 
-        let Some(decision) = path.next_decision() else {
-            println!("{:?}", self);
-            println!("{:?}", path);
-            panic!("path has no next decision");
-        };
+        // let Some(decision) = path.next_decision() else {
+        //     println!("{:?}", self);
+        //     println!("{:?}", path);
+        //     panic!("path has no next decision");
+        // };
+
+        let decision = path.next_decision().unwrap_or_else(|| {
+            // this should only happen if we are on the same
+            // section as the destination
+            let car_pos = grid.car_position(car_id);
+            assert_eq!(car_pos.road_section, path.destination.road_section);
+
+            if path.wants_to_charge {
+                // we are in the charging station, or on the same
+                // road section as it.
+
+                if car_pos.is_at_charging_station() {
+                    // the path wants to charge, and we are charging.
+                    CarDecision::ChargeBattery
+                } else if grid.charging_station_entrance_at(car_pos).is_some() {
+                    // the path wants to charge, and we are right next
+                    // to a charging station.
+                    CarDecision::ChargeBattery
+                } else {
+                    // we are on the charging station's section. keep
+                    // going forwards until we get there.
+                    assert!(car_pos.position_in_section < path.destination.position_in_section);
+                    CarDecision::GoStraight
+                }
+            } else {
+                // path has no next decision. this can happen if the
+                // path length is 0, for example the car wants to pick
+                // up a passenger right next to it.
+                // in that case, it doesn't really matter what the
+                // decision is, just pick something random.
+                RandomTurns {}.get_turn(grid, car_id)
+            }
+        });
 
         decision
     }
@@ -93,7 +128,7 @@ pub struct RandomTurns {}
 impl CarAgent for RandomTurns {
     fn get_turn(&mut self, grid: &mut Grid, car_id: CarId) -> CarDecision {
         let car_position = grid.car_position(car_id);
-        let options = car_position.road_section.possible_decisions();
+        let options = car_position.possible_decisions();
         *options
             .choose(&mut rand::thread_rng())
             .expect("List of possible car decisions is empty")
@@ -192,10 +227,12 @@ pub enum AgentAction {
     PickUp(PassengerId),
     DropOff(PassengerId),
     HeadTowards(Direction),
+    ChargeBattery(ChargingStationId),
 }
 
 pub struct PythonAgent {
     path: Option<Path>,
+
     python_wrapper: PythonAgentWrapper,
 
     // store the state/action pairs, then when we get the new
@@ -208,6 +245,7 @@ impl PythonAgent {
     pub fn new(python_wrapper: PythonAgentWrapper) -> Self {
         Self {
             path: None,
+
             python_wrapper,
             half_transitions: Mutex::new(None),
         }
@@ -216,7 +254,7 @@ impl PythonAgent {
     pub fn end_of_tick(&self, new_state: PyGridState) {
         let mut guard = self.half_transitions.lock().unwrap();
 
-        let (old_state, action) = match guard.take() {
+        let (old_state, _action) = match guard.take() {
             Some((old_state, action)) => (Some(old_state), Some(action)),
             None => (None, None), // first tick, car just spawned
         };
@@ -236,7 +274,9 @@ impl CarPathAgent for PythonAgent {
         assert!(guard.is_none());
         *guard = Some(half_transition);
 
-        let car = grid.car_mut(car_id);
+        // we use this instead of grid.car_mut() so that we only hold the
+        // &mut on grid.cars, not the whole grid
+        let car = grid.cars.get_mut(&car_id).unwrap();
         car.took_action(py_action.clone());
 
         let agent_action: AgentAction = py_action.into();
@@ -274,9 +314,10 @@ impl CarPathAgent for PythonAgent {
             AgentAction::HeadTowards(direction) => {
                 let current_road_section = car.position.road_section;
 
-                let possible_decisions = current_road_section.possible_decisions();
+                let possible_decisions = car.position.possible_decisions();
                 let possible_next_positions = possible_decisions
                     .into_iter()
+                    .filter(|d| *d != CarDecision::ChargeBattery)
                     .filter_map(|d| current_road_section.take_decision(d))
                     .collect::<Vec<_>>();
 
@@ -297,9 +338,19 @@ impl CarPathAgent for PythonAgent {
                 let destination = CarPosition {
                     road_section: new_road_section,
                     position_in_section: 0,
+                    in_charging_station: None,
                 };
 
                 let path = car.find_path(destination);
+                self.path = Some(path);
+            }
+
+            AgentAction::ChargeBattery(station_id) => {
+                let charging_station = grid.charging_stations.get(&station_id).unwrap();
+                let position = charging_station.entrance;
+                let mut path = car.find_path(position);
+
+                path.wants_to_charge = true;
                 self.path = Some(path);
             }
         }
@@ -313,8 +364,8 @@ impl CarPathAgent for PythonAgent {
 
         if grid.opts.verbose {
             print!("{agent_action_dbg: <25} {passenger_count: <2} ");
+            std::io::stdout().flush().unwrap();
         }
-        std::io::stdout().flush().unwrap();
     }
 
     fn get_path(&self) -> Option<&Path> {

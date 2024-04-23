@@ -1,11 +1,15 @@
 use macroquad::prelude::*;
 
-use crate::logic::{passenger::Passenger, util::Orientation};
+use crate::logic::{
+    car::CarPosition,
+    passenger::Passenger,
+    util::{Direction, Orientation},
+};
 
 use super::{
     car::CarRenderer,
     grid::{GridRenderer, RoadRenderer},
-    util::Line,
+    util::{Line, RoadCoords},
 };
 
 pub struct PassengerRenderer {
@@ -15,12 +19,12 @@ pub struct PassengerRenderer {
 }
 
 impl PassengerRenderer {
-    const DISTANCE_FROM_ROAD: f32 = 10.0;
+    const DISTANCE_FROM_ROAD: f32 = 1.0;
     const RADIUS: f32 = 5.0;
 
     pub fn render_waiting(grid: &GridRenderer, passenger: &Passenger) {
         let position = passenger.start;
-        let road = &grid.road_at(position.road_section);
+        /*let road = &grid.road_at(position.road_section);
         let car_rect = CarRenderer::rect_from_position(position, road);
 
         let line_through_car = Line::through_rect_middle(car_rect, road.orientation.other());
@@ -50,7 +54,10 @@ impl PassengerRenderer {
                     cy -= offset;
                 }
             }
-        };
+        };*/
+
+        let road_coords = RoadCoords::new(position, grid);
+        let (cx, cy) = road_coords.sidewalk_coords(Self::DISTANCE_FROM_ROAD);
 
         draw_circle(cx, cy, Self::RADIUS, passenger.colour);
     }

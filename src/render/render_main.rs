@@ -1,8 +1,6 @@
 use std::{
-    borrow::{Borrow, BorrowMut},
-    ops::{Deref, DerefMut},
-    sync::{Arc, Condvar, Mutex, OnceLock},
-    time::{Duration, Instant},
+    ops::{DerefMut},
+    sync::{Arc, Mutex},
 };
 
 use super::grid::GridRenderer;
