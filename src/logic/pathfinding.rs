@@ -3,7 +3,9 @@ use std::{collections::VecDeque, hash::Hash};
 use pathfinding::directed::astar::astar;
 
 use super::{
-    car::{CarDecision, CarPosition}, util::RoadSection,
+    car::{CarDecision, CarPosition},
+    car_agent::AgentAction,
+    util::RoadSection,
 };
 
 #[derive(Clone, Debug)]
@@ -17,26 +19,32 @@ pub struct Path {
 
     pub cost: usize,
 
-    pub wants_to_charge: bool,
+    pub action: Option<AgentAction>,
 }
 
 impl Path {
-    pub fn find(start: CarPosition, destination: CarPosition, speed: usize) -> Self {
+    pub fn find(start: CarPosition, destination: CarPosition) -> Self {
+        if start.road_section == destination.road_section
+            && start.position_in_section <= destination.position_in_section
+        {
+            return Self {
+                sections: VecDeque::from([start.road_section]),
+                destination,
+                cost: (destination.position_in_section - start.position_in_section),
+                action: None,
+            };
+        }
+
         let graph = Graph {
-            // grid,
             start,
             destination,
-            // nodes: RefCell::default(),
-            // nodes: vec![],
-            speed,
         };
 
         let start = graph.start_node();
 
         // let node = |index: NodeIndex| &graph.nodes[index];
 
-        let heuristic =
-            |node: &Node| -> usize { node.section().manhattan_distance(destination.road_section) };
+        let heuristic = |node: &Node| -> usize { node.manhattan_distance(destination) };
         let successors = |node: &Node| {
             // let node = node(*i);
             // let successors = graph.successors(node);
@@ -56,20 +64,21 @@ impl Path {
         };
         let reached_goal = |node: &Node| -> bool { node.is_end_node(destination) };
 
-        let (sections, cost) =
+        let (sections, mut cost) =
             astar(&start, successors, heuristic, reached_goal).expect("No path to destination");
+        cost += destination.position_in_section;
 
         let sections = sections.into_iter().map(|node| node.section()).collect();
         Self {
             sections,
             destination,
             cost,
-            wants_to_charge: false,
+            action: None,
         }
     }
 
     pub fn distance(start: CarPosition, end: CarPosition, speed: usize) -> usize {
-        let path = Self::find(start, end, speed);
+        let path = Self::find(start, end);
         path.cost
     }
 
@@ -84,23 +93,19 @@ impl Path {
 struct Graph {
     start: CarPosition,
     destination: CarPosition,
-    // nodes: RefCell<Vec<Node>>,
-    // nodes: Vec<Node>,
-    speed: usize,
 }
 
 impl Graph {
     fn start_node(&self) -> Node {
         Node {
             car_pos: self.start,
-
             ticks_after_start: 0,
             ticks_after_parent: 0,
         }
     }
 
     fn successors(&self, node: &Node) -> Vec<(Node, usize)> {
-        // fn successors(&'g self) -> impl Iterator<Item = (Node, usize)> {
+        
         let possible_decisions = node.car_pos.possible_decisions();
 
         let roads = possible_decisions
@@ -113,7 +118,7 @@ impl Graph {
             in_charging_station: None,
         });
         let nodes = car_positions.map(|p| {
-            let ticks_after_parent = self.ticks_to(node, p);
+            let ticks_after_parent = self.cost_to(node, p);
             Node {
                 car_pos: p,
                 ticks_after_parent,
@@ -122,8 +127,6 @@ impl Graph {
         });
         let nodes_and_cost = nodes.map(|n| {
             let move_cost = n.ticks_after_parent;
-            // let node_index = self.add_node(n);
-            // (node_index, move_cost)
             (n, move_cost)
         });
 
@@ -134,43 +137,23 @@ impl Graph {
     }
 
     // the cost to go here from here to a successor
-    fn ticks_to(&self, node: &Node, to: CarPosition) -> usize {
+    fn cost_to(&self, node: &Node, to: CarPosition) -> usize {
+        assert_ne!(node.car_pos.road_section, to.road_section);
+
         // count the ticks of:
-        // 1. the car reaching the end of the section
-        // 2. the traffic light turning green
+        // 1. the car reaching the start of the next section
         // 3. the car reaching the position in the next section
 
         // 1.
         let distance_from_road_end =
-            node.section().direction.max_position_in_section() - node.car_pos.position_in_section;
-        let car_speed = self.speed; // ticks per movement
-        let time_to_road_end = distance_from_road_end * car_speed;
-
-        // 2.
-        // TMP: disabled because getting lifetimes to work with astar() is haaard
-        // (feel free to try)
-        // for now, just add 1 penalty if turning (not going straight) to
-        // incentivise going from green light to green light
-        let mut traffic_light_wait_time = 0;
-        if node.car_pos.road_section.direction.orientation()
-            != to.road_section.direction.orientation()
-        {
-            traffic_light_wait_time = 1;
-        }
-
-        // let traffic_light = self.grid.traffic_light_at(&node.section());
-        // let traffic_light = traffic_light.time_travel(node.ticks_after_start + time_to_road_end);
-        // let traffic_light_wait_time = if traffic_light.state == LightState::Green {
-        //     0
-        // } else {
-        //     traffic_light.ticks_left
-        // };
+            node.section().direction.max_position_in_section() + 1 - node.car_pos.position_in_section;
+        let time_to_road_end = distance_from_road_end;
 
         // 3.
         let distance_from_road_start = to.position_in_section;
-        let time_from_road_start = distance_from_road_start * car_speed;
+        let time_from_road_start = distance_from_road_start;
 
-        time_to_road_end + traffic_light_wait_time + time_from_road_start
+        time_to_road_end + time_from_road_start
     }
 
     // fn add_node(&self, node: Node) -> NodeIndex {
@@ -223,5 +206,9 @@ impl Node {
         }
 
         self.car_pos.position_in_section <= destination.position_in_section
+    }
+
+    fn manhattan_distance(&self, destination: CarPosition) -> usize {
+        self.car_pos.manhattan_distance(destination)
     }
 }

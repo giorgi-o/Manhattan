@@ -13,6 +13,7 @@ use crate::{python::bridge::bridge::PyAction, render::car::CarRenderer};
 use super::{
     car_agent::CarAgent,
     ev::{BatteryPercent, ChargingStation, ChargingStationId},
+    grid::Grid,
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
     util::{Direction, RoadSection},
@@ -186,7 +187,7 @@ impl CarPosition {
     }
 
     pub fn path_to(self, other: CarPosition) -> Path {
-        Path::find(self, other, CarProps::SPEED)
+        Path::find(self, other)
     }
 
     pub fn distance_to(self, other: CarPosition) -> usize {
@@ -201,7 +202,32 @@ impl CarPosition {
             return other.position_in_section - self.position_in_section;
         }
 
+        let manhattan_distance = self.manhattan_distance(other);
+        const PYTHON_MAX_DISTANCE: usize = 100;
+        if manhattan_distance > PYTHON_MAX_DISTANCE {
+            return manhattan_distance;
+        }
+
         self.path_to(other).cost
+    }
+
+    pub fn manhattan_distance(self, other: CarPosition) -> usize {
+        // note: not accurate, especially for short distances (use pathfinding instead)
+        // mostly used for estimating long ones
+
+        let self_section_coords = self.road_section.checkerboard_coords(); // section x 1, section y 1
+        let other_section_coords = other.road_section.checkerboard_coords();
+
+        let section_dx =
+            (self_section_coords.0.floor() - other_section_coords.0.floor()).abs() as usize;
+        let section_dy =
+            (self_section_coords.1.floor() - other_section_coords.1.floor()).abs() as usize;
+
+        let mut distance = section_dx * (Grid::HORIZONTAL_SECTION_SLOTS)
+            + section_dy * (Grid::VERTICAL_SECTION_SLOTS)
+            + other.position_in_section;
+        distance = distance.saturating_sub(self.position_in_section);
+        distance
     }
 
     pub fn leave_charging_station(&self, decision: CarDecision) -> Self {
@@ -318,7 +344,7 @@ impl Car {
     }
 
     pub fn find_path(&self, destination: CarPosition) -> Path {
-        Path::find(self.position, destination, self.props.speed)
+        Path::find(self.position, destination)
     }
 
     pub fn next_position(

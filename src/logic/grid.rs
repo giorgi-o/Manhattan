@@ -175,8 +175,8 @@ pub struct Grid {
 }
 
 impl Grid {
-    pub const HORIZONTAL_ROADS: usize = 5;
-    pub const VERTICAL_ROADS: usize = 7;
+    pub const HORIZONTAL_ROADS: usize = 10;
+    pub const VERTICAL_ROADS: usize = 15;
     pub const HORIZONTAL_SECTION_SLOTS: usize = 5;
     pub const VERTICAL_SECTION_SLOTS: usize = 5;
 
@@ -478,7 +478,7 @@ impl Grid {
 
         // move the cars
         for car in self.cars.values_mut() {
-            car.ticks_since_out_of_battery += 1;
+            car.ticks_since_out_of_battery = car.ticks_since_out_of_battery.saturating_add(1);
 
             let Some(next_position) = cars_to_move.remove(&car.position) else {
                 panic!("{:?} was not in cars_to_move (no next position)", car.id());
@@ -497,16 +497,22 @@ impl Grid {
 
                 // tick car battery
                 if !car.props.agent.is_npc() {
-                    car.battery.discharge(car.props.discharge_rate);
+                    // car.battery.discharge(car.props.discharge_rate);
                     // car.battery.discharge(0.01);
                 }
 
-                if car.battery.is_empty() && !car.props.agent.is_npc() {
+                if car.battery.is_empty()
+                    && !car.props.agent.is_npc()
+                    && !car.position.is_at_charging_station()
+                {
                     // car ran out of battery
                     cars_out_of_battery.push(car.id());
                     next_positions.remove(&next_position);
                     // can't do any more processing here because can't edit
                     // self.cars while iterating over it
+                    // note: if the car was in the charging station with a
+                    // negative battery and tried to leave, let it. it will
+                    // be punished and brought right back here next tick >:)
                 } else {
                     let old_position = car.position;
 
@@ -600,7 +606,7 @@ impl Grid {
 
                     // spawn the car at the charging station
                     let position = CarPosition::at_charging_station(closest_charging_station);
-                    let mut car = Car::new(car_to_spawn.props, position, 0.0);
+                    let mut car = Car::new(car_to_spawn.props, position, -0.1);
                     car.passengers = passengers;
 
                     // self.car_positions.insert(position, car.id());
@@ -611,7 +617,7 @@ impl Grid {
 
                 let pos_is_taken = |pos: &_| self.car_positions.contains_key(pos);
                 let car_position = car_to_spawn.position(&mut rng, pos_is_taken);
-                let car = Car::new(car_to_spawn.props, car_position, 0.1);
+                let car = Car::new(car_to_spawn.props, car_position, 0.05);
 
                 // self.car_positions.insert(car_position, car.id());
                 // self.cars.insert(car.id(), car);
@@ -725,7 +731,7 @@ impl Grid {
                         // === drop off passenger ===
                         let drop_off_here = passenger.destination == car.position;
                         if drop_off_here {
-                            print!("Car dropped off passenger! ");
+                            // print!("Car dropped off passenger! ");
                             let event = TickEvent::PassengerDroppedOff(car.props.id, passenger);
                             self.tick_events.push(event);
                         } else {
@@ -756,7 +762,7 @@ impl Grid {
                             let car_passenger = CarPassenger::DroppingOff(passenger);
                             car.passengers.push(car_passenger);
 
-                            print!("Car picked up passenger! ");
+                            // print!("Car picked up passenger! ");
                             std::io::stdout().flush().unwrap();
                         }
                     }

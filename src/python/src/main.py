@@ -11,7 +11,7 @@ from rl import dqn
 
 
 def start(rust):
-    start_debug()
+    # start_debug()
 
     charging_stations_pos = [
         rust.CarPosition(
@@ -32,17 +32,17 @@ def start(rust):
         initial_passenger_count=20,
         passenger_spawn_rate=0.0,
         max_passengers=30,
-        agent_car_count=2,
+        agent_car_count=5,
         npc_car_count=15,
         passengers_per_car=4,
         charging_stations=charging_stations_pos,
         charging_station_capacity=1,
         passenger_radius=5,
-        car_radius=2,
-        verbose=True,
+        car_radius=3,
+        verbose=False,
     )
     env_opts = EnvOpts(
-        render=True,
+        render=False,
     )
 
     with LogStep("Creating environment..."):

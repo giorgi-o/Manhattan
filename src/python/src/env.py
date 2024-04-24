@@ -251,32 +251,35 @@ class GridVecEnv(BaseVectorEnv):
         # else:
         #     return Action.head_towards(Direction.Up, action), False
 
-    def calculate_reward(self, state: GridState, action_valid: bool = True) -> float:
-        pov_car = state.pov_car
+    def calculate_reward(
+        self, old_state: GridState, new_state: GridState, action_valid: bool = True
+    ) -> float:
+        pov_car = new_state.pov_car
         reward = 0.0
 
-        total_passengers = state.total_passenger_count()
+        total_passengers = (old_state or new_state).total_passenger_count()
         if total_passengers == 0:
             # we win: +5000
             reward += 5000
         else:
             # -1 for every passenger on the grid
-            reward -= state.total_passenger_count()
+            reward -= total_passengers
 
         # for passenger in chain(state.idle_passengers, state.pov_car.passengers):
         #     # penalty of "time alive" / 100
         #     reward -= passenger.ticks_since_request / 1000
 
+        events = new_state.events
         events_reward = 0.0
 
         # +100 for every passenger dropped off
-        events_reward += 100 * len(state.events.car_dropped_off_passenger)
+        events_reward += 100 * len(events.car_dropped_off_passenger)
 
         # +5 for every passenger picked up
-        events_reward += 5 * len(state.events.car_picked_up_passenger)
+        events_reward += 5 * len(events.car_picked_up_passenger)
 
         # -500 if the car ran out of battery
-        events_reward -= 500 * len(state.events.car_out_of_battery)
+        events_reward -= 500 * len(events.car_out_of_battery)
 
         reward += events_reward
 
@@ -322,8 +325,10 @@ class GridVecEnv(BaseVectorEnv):
         #         reward -= 20
 
         # if pov_car.pos.in_charging_station:
-        #     # +0.1 if car is charging
-        #     reward += 0.1
+        #     # # +0.1 if car is charging
+        #     # reward += 0.1
+        #     if pov_car.battery < 0.1:
+        #         reward += 0.1
 
         if self.grid_opts.verbose:
             print(f"{reward:.1f}", end=" ", flush=True)
@@ -424,7 +429,7 @@ class GridVecEnv(BaseVectorEnv):
         return [
             *self._parse_coords(car.pos, car.pos),  # pos
             1 if car.pos.in_charging_station else 0,
-            car.battery * 100,
+            max(car.battery * 100, 0.0),
             *self._parse_car_passengers(car),
         ]
 
@@ -460,7 +465,7 @@ class GridVecEnv(BaseVectorEnv):
         for i, car in enumerate(charging_station.cars):
             i = i * 2
             slots[i] = 1
-            slots[i + 1] = car.battery
+            slots[i + 1] = max(car.battery, 0)
 
         return [
             *self._parse_coords(charging_station.pos, pov_car.pos),  # pos
@@ -527,25 +532,26 @@ class GridVecEnv(BaseVectorEnv):
         current_battery_level = state.pov_car.battery
         is_in_charging_station = state.pov_car.pos.in_charging_station
 
-        if current_battery_level > 0.95:
-            pass  # battery is full, don't start charging
-        # elif current_battery_level < 0.1:
-        #     # hack: only allow charging
-        #     valid_actions[:] = False
+        # tmp: disable charging for now
+        # if current_battery_level > 0.95:
+        #     pass  # battery is full, don't start charging
+        # # elif current_battery_level < 0.1:
+        # #     # hack: only allow charging
+        # #     valid_actions[:] = False
+        # #     valid_actions[offset] = True
+        # elif is_in_charging_station:
+        #     # allow keep charging, but don't allow going to the other one
         #     valid_actions[offset] = True
-        elif is_in_charging_station:
-            # allow keep charging, but don't allow going to the other one
-            valid_actions[offset] = True
-        else:
-            # tmp: can always go to charging station, will just
-            # hover in front if full
-            valid_actions[offset] = True
-            # for i, charging_station in enumerate(state.charging_stations):
-            # if not charging_station.is_full():
-            # valid_actions[offset + i] = True
-            # break  # tmp-ish: only allow charging at nearest charging station
-        if valid_actions[offset] == False:
-            print("Car can't go to cs!", flush=True)
+        # else:
+        #     # tmp: can always go to charging station, will just
+        #     # hover in front if full
+        #     # valid_actions[offset] = True
+        #     for i, charging_station in enumerate(state.charging_stations):
+        #         if not charging_station.is_full():
+        #             valid_actions[offset + i] = True
+        #     # break  # tmp-ish: only allow charging at nearest charging station
+        # # if valid_actions[offset] == False:
+        #     # print("Car can't go to cs!", flush=True)
         offset += 1  # self.charging_station_count
 
         # head towards actions (always valid)
@@ -599,6 +605,8 @@ class GridEnvWorker(EnvWorker):
 
         else:
             self.reset_called = False
+            if self.vec_env.grid_opts.verbose:
+                print(int(action), end=" ", flush=True)
 
             assert self.new_obs is not None  # since first tick already happened
             self.action = self.vec_env.parse_action(self.new_obs, int(action))
@@ -656,7 +664,7 @@ class GridEnvWorker(EnvWorker):
         # self.old_obs will be the one from the previous env
 
         self.new_obs = new_state
-        self.reward = self.vec_env.calculate_reward(new_state, self.action_valid)
+        self.reward = self.vec_env.calculate_reward(old_state, new_state, self.action_valid)
         self.reward += self.pending_events_score
 
     # === USELESS ABC FUNCTIONS ===

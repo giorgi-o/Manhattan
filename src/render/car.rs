@@ -1,8 +1,7 @@
 use macroquad::prelude::*;
 
 use crate::logic::{
-    car::{Car, CarPosition},
-    util::{Direction, Orientation, RoadSection},
+    car::{Car, CarPosition}, car_agent::AgentAction, util::{Direction, Orientation, RoadSection}
 };
 
 use super::{
@@ -162,9 +161,14 @@ impl<'g> CarRenderer<'g> {
         };
 
         let mut sections = path.sections.iter().peekable();
-        // first section is the one the car is currently on
-        // we don't want to render a line over the whole section, skip it
-        // sections.next();
+        
+        let path_colour = match path.action {
+            None => BLACK,
+            Some(AgentAction::PickUp(_)) => YELLOW,
+            Some(AgentAction::DropOff(_)) => BLUE,
+            Some(AgentAction::ChargeBattery(_)) => GREEN,
+            Some(AgentAction::HeadTowards(_)) => BROWN,
+        };
 
         let mut start = PathLineBound::Car(self.car.position);
         // for path_section in sections {
@@ -187,7 +191,7 @@ impl<'g> CarRenderer<'g> {
                 }
             }
 
-            self.render_path_line(start, end, self.car.props.colour);
+            self.render_path_line(start, end, path_colour);
 
             start = end;
         }
@@ -266,7 +270,7 @@ impl<'g> CarRenderer<'g> {
         }
 
         let rect = self.rect();
-        let font_size = rect.w.min(rect.h) / 2.0;
+        let font_size = rect.w.max(rect.h);
         let center = rect.center();
 
         let mut text = format!("{:.0}%", self.car.battery.get() * 100.);

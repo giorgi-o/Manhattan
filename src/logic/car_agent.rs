@@ -73,7 +73,10 @@ impl<T: CarPathAgent> CarAgent for T {
             let car_pos = grid.car_position(car_id);
             assert_eq!(car_pos.road_section, path.destination.road_section);
 
-            if path.wants_to_charge {
+            if path
+                .action
+                .is_some_and(|a| matches!(a, AgentAction::ChargeBattery(_)))
+            {
                 // we are in the charging station, or on the same
                 // road section as it.
 
@@ -88,7 +91,7 @@ impl<T: CarPathAgent> CarAgent for T {
                     // we are on the charging station's section. keep
                     // going forwards until we get there.
                     // assert!(car_pos.position_in_section < path.destination.position_in_section);
-                    // commented out: the car can now reach the charging station 
+                    // commented out: the car can now reach the charging station
                     // on the opposite side
                     CarDecision::GoStraight
                 }
@@ -284,7 +287,7 @@ impl CarPathAgent for PythonAgent {
         let agent_action: AgentAction = py_action.into();
         let agent_action_dbg = format!("{:?}", agent_action);
 
-        match agent_action {
+        let mut path = match agent_action {
             AgentAction::PickUp(passenger_id) => {
                 grid.assign_car_to_passenger(car_id, passenger_id);
 
@@ -294,7 +297,7 @@ impl CarPathAgent for PythonAgent {
 
                 let car = grid.car(car_id);
                 let path = car.find_path(passenger.start);
-                self.path = Some(path);
+                path
             }
 
             AgentAction::DropOff(passenger_id) => {
@@ -310,7 +313,7 @@ impl CarPathAgent for PythonAgent {
                     .expect("Tried dropping off passenger not in the car");
 
                 let path = car.find_path(passenger.destination);
-                self.path = Some(path);
+                path
             }
 
             AgentAction::HeadTowards(direction) => {
@@ -344,7 +347,7 @@ impl CarPathAgent for PythonAgent {
                 };
 
                 let path = car.find_path(destination);
-                self.path = Some(path);
+                path
             }
 
             AgentAction::ChargeBattery(station_id) => {
@@ -356,11 +359,13 @@ impl CarPathAgent for PythonAgent {
                 ];
                 let paths = positions.iter().map(|p| car.find_path(*p));
 
-                let mut path = paths.min_by_key(|p| p.cost).unwrap();
-                path.wants_to_charge = true;
-                self.path = Some(path);
+                let path = paths.min_by_key(|p| p.cost).unwrap();
+                path
             }
-        }
+        };
+
+        path.action = Some(agent_action);
+        self.path = Some(path);
 
         let car = grid.car(car_id);
         let passenger_count = car

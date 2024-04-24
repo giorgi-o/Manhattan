@@ -236,15 +236,11 @@ impl PyGridState {
         this.can_turn = Some(can_turn);
 
         // sort passengers by closest to car
-        // this.idle_passengers
-        // .sort_by_cached_key(|passenger| pov_car.position.distance_to(passenger.pos.into()));
         let val = |passenger: &PyPassenger| pov_car.position.distance_to(passenger.pos.into());
         this.idle_passengers =
             lowest_n_sorted(this.idle_passengers.into_iter(), self.passenger_radius, val);
 
         // sort cars by closest to pov car
-        // this.other_cars
-        // .sort_by_cached_key(|car| pov_car.position.distance_to(car.pos.into()));
         let val = |car: &PyCar| pov_car.position.distance_to(car.pos.into());
         this.other_cars = lowest_n_sorted(this.other_cars.into_iter(), self.car_radius, val);
 
@@ -269,11 +265,15 @@ impl PyGridState {
 
 pub fn lowest_n_sorted<I, F, V>(iter: I, n: usize, mut val: F) -> Vec<I::Item>
 where
-    I: Iterator,
-    I::Item: PartialEq + Eq,
+    I: Iterator + std::fmt::Debug,
+    I::Item: PartialEq + Eq + std::fmt::Debug,
     F: FnMut(&I::Item) -> V,
-    V: Ord + PartialEq + Eq,
+    V: Ord + PartialEq + Eq + std::fmt::Debug,
 {
+    // takes an iterator, get the lowest n elements and sorts them
+    // at the front of the returned vector. all the other elements will be
+    // there too, but beyond n elements, are not sorted.
+
     #[derive(PartialEq, Eq)]
     struct Item<T, V>
     where
@@ -304,7 +304,21 @@ where
         }
     }
 
-    let mut heap: BinaryHeap<Item<I::Item, V>> = BinaryHeap::with_capacity(n);
+    // tmp
+    // let iter = iter.collect::<Vec<_>>();
+    // // println!("Sorting lowest {n}: {iter:#?}");
+    // println!(
+    //     "vals: {:?}",
+    //     iter.iter()
+    //         .map(|i| format!("{:?}", val(i)))
+    //         .collect::<Vec<_>>()
+    // );
+    // let iter = iter.into_iter();
+
+    let mut heap: BinaryHeap<Item<I::Item, V>> = BinaryHeap::with_capacity(n + 1);
+
+    let popped_elements_capacity = iter.size_hint().1.map_or(0, |c| c.saturating_sub(n));
+    let mut popped_elements = Vec::with_capacity(popped_elements_capacity);
 
     for item in iter {
         let item = Item {
@@ -314,17 +328,34 @@ where
         heap.push(item);
 
         if heap.len() > n {
-            heap.pop();
+            let popped = heap.pop();
+            popped_elements.push(popped.unwrap().item);
         }
     }
 
-    heap.into_iter().map(|item| item.item).collect()
+    let result: Vec<I::Item> = heap
+        .into_sorted_vec()
+        .into_iter()
+        .map(|item| item.item)
+        .chain(popped_elements)
+        .collect();
+
+    // tmp
+    // println!("result: {result:#?}");
+    // println!(
+    //     "sorted vals: {:?}",
+    //     result
+    //         .iter()
+    //         .map(|i| format!("{:?}", val(i)))
+    //         .collect::<Vec<_>>()
+    // );
+
+    result
 }
 
 impl PyPassenger {
     pub fn idle(passenger: &Passenger, ticks_passed: usize) -> Self {
-        let path_to_destination =
-            Path::find(passenger.start, passenger.destination, Grid::CAR_SPEED);
+        let path_to_destination = Path::find(passenger.start, passenger.destination);
         let distance_to_destination = path_to_destination.cost;
 
         Self {
@@ -338,8 +369,7 @@ impl PyPassenger {
     }
 
     pub fn riding(passenger: &Passenger, car: &Car, ticks_passed: usize) -> Self {
-        let path_to_destination =
-            Path::find(passenger.start, passenger.destination, Grid::CAR_SPEED);
+        let path_to_destination = Path::find(passenger.start, passenger.destination);
         let distance_to_destination = path_to_destination.cost;
 
         Self {
