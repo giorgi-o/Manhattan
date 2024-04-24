@@ -11,7 +11,7 @@ from rl import dqn
 
 
 def start(rust):
-    # start_debug()
+    start_debug()
 
     charging_stations_pos = [
         rust.CarPosition(

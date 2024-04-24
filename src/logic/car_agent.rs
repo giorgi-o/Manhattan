@@ -87,7 +87,9 @@ impl<T: CarPathAgent> CarAgent for T {
                 } else {
                     // we are on the charging station's section. keep
                     // going forwards until we get there.
-                    assert!(car_pos.position_in_section < path.destination.position_in_section);
+                    // assert!(car_pos.position_in_section < path.destination.position_in_section);
+                    // commented out: the car can now reach the charging station 
+                    // on the opposite side
                     CarDecision::GoStraight
                 }
             } else {
@@ -347,9 +349,14 @@ impl CarPathAgent for PythonAgent {
 
             AgentAction::ChargeBattery(station_id) => {
                 let charging_station = grid.charging_stations.get(&station_id).unwrap();
-                let position = charging_station.entrance;
-                let mut path = car.find_path(position);
 
+                let positions = [
+                    charging_station.entrance,
+                    charging_station.entrance.other_side_of_road(),
+                ];
+                let paths = positions.iter().map(|p| car.find_path(*p));
+
+                let mut path = paths.min_by_key(|p| p.cost).unwrap();
                 path.wants_to_charge = true;
                 self.path = Some(path);
             }

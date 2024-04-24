@@ -109,16 +109,18 @@ pub struct PyCar {
     battery: f32,
     #[pyo3(get)]
     recent_actions: Vec<PyAction>,
+    #[pyo3(get)]
+    ticks_since_out_of_battery: usize,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 #[pyclass]
 pub enum PyPassengerState {
     Idle,
     Riding,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 #[pyclass]
 pub struct PyPassenger {
     pub id: PassengerId,
@@ -242,7 +244,7 @@ impl PyGridState {
 
         // sort cars by closest to pov car
         // this.other_cars
-            // .sort_by_cached_key(|car| pov_car.position.distance_to(car.pos.into()));
+        // .sort_by_cached_key(|car| pov_car.position.distance_to(car.pos.into()));
         let val = |car: &PyCar| pov_car.position.distance_to(car.pos.into());
         this.other_cars = lowest_n_sorted(this.other_cars.into_iter(), self.car_radius, val);
 
@@ -402,7 +404,8 @@ impl PyCar {
             passengers.push(py_passenger);
         }
 
-        let recent_actions = car.recent_actions.iter().cloned().collect();
+        let recent_actions = car.recent_actions.iter().copied().collect();
+        let ticks_since_out_of_battery = car.ticks_since_out_of_battery;
 
         Self {
             id: car.id(),
@@ -411,6 +414,7 @@ impl PyCar {
             passengers,
             battery: car.battery.get(),
             recent_actions,
+            ticks_since_out_of_battery,
         }
     }
 }

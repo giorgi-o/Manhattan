@@ -346,8 +346,12 @@ impl Grid {
     }
 
     pub fn charging_station_entrance_at(&self, pos: CarPosition) -> Option<&ChargingStation> {
-        let id = ChargingStationId::from(pos);
-        self.charging_stations.get(&id)
+        let id1 = ChargingStationId::from(pos);
+        let id2 = ChargingStationId::from(pos.other_side_of_road());
+
+        self.charging_stations
+            .get(&id1)
+            .or_else(|| self.charging_stations.get(&id2))
     }
 
     pub fn charging_station_at_mut(&mut self, pos: CarPosition) -> Option<&mut ChargingStation> {
@@ -474,6 +478,8 @@ impl Grid {
 
         // move the cars
         for car in self.cars.values_mut() {
+            car.ticks_since_out_of_battery += 1;
+
             let Some(next_position) = cars_to_move.remove(&car.position) else {
                 panic!("{:?} was not in cars_to_move (no next position)", car.id());
             };
@@ -545,7 +551,8 @@ impl Grid {
         // process "out of battery" cars
         for car_id in cars_out_of_battery {
             // remove car from grid
-            let car = self.cars.remove(&car_id).unwrap();
+            let mut car = self.cars.remove(&car_id).unwrap();
+            car.ticks_since_out_of_battery = 0;
 
             // assert the car wasn't at a charging station
             assert!(!car.position.is_at_charging_station());
@@ -604,7 +611,7 @@ impl Grid {
 
                 let pos_is_taken = |pos: &_| self.car_positions.contains_key(pos);
                 let car_position = car_to_spawn.position(&mut rng, pos_is_taken);
-                let car = Car::new(car_to_spawn.props, car_position, 0.3);
+                let car = Car::new(car_to_spawn.props, car_position, 0.1);
 
                 // self.car_positions.insert(car_position, car.id());
                 // self.cars.insert(car.id(), car);

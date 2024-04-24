@@ -15,11 +15,12 @@ from tianshou.data import (
     VectorReplayBuffer,
 )
 from tianshou.env import DummyVectorEnv
-from tianshou.policy import RainbowPolicy
+from tianshou.policy import RainbowPolicy, FQFPolicy
 from tianshou.policy.base import BasePolicy
 from tianshou.trainer import OffpolicyTrainer
 from tianshou.utils import TensorboardLogger
 from tianshou.utils.net.common import Net
+from tianshou.utils.net.discrete import FullQuantileFunction, FractionProposalNetwork
 from tianshou.utils.space_info import SpaceInfo
 
 from env import GridVecEnv
@@ -28,43 +29,63 @@ from util import LogStep
 
 def dqn(env: GridVecEnv) -> None:
     space_info = SpaceInfo.from_spaces(env._action_space, env._observation_space)
+
     # seed
     seed = 42
     np.random.seed(seed)
     torch.manual_seed(seed)
     env.seed(seed)
-    # Q_param = V_param = {"hidden_sizes": [128]}
+
     # model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    with LogStep("Creating neural network..."):
-        net = Net(
+    with LogStep("Creating feature network..."):
+        feature_net = Net(
             state_shape=space_info.observation_info.obs_shape,
-            action_shape=space_info.action_info.action_shape,
-            hidden_sizes=[256, 256],
+            action_shape=64,
+            hidden_sizes=[64, 64],
             device=device,
-            softmax=True,
-            num_atoms=51,
+            softmax=False,
+            # softmax=True,
+            # num_atoms=51,
+        ).to(device)
+
+    with LogStep("Creating full quantile function..."):
+        net = FullQuantileFunction(
+            feature_net,
+            space_info.action_info.action_shape,
+            [64, 64, 64],
+            64,
+            device=device,
         ).to(device)
 
     with LogStep("Creating optimizer..."):
-        optim = torch.optim.Adam(net.parameters(), lr=1e-3)
-    
-    with LogStep("Creating DQN policy..."):
-        policy = RainbowPolicy(
+        optim = torch.optim.Adam(net.parameters(), lr=5e-5)
+
+    with LogStep("Creating fraction network..."):
+        fraction_net = FractionProposalNetwork(32, embedding_dim=net.input_dim)
+
+    with LogStep("Creating fraction optimiser..."):
+        fraction_optim = torch.optim.Adam(fraction_net.parameters(), lr=2.5e-9)
+
+    with LogStep("Creating FQF policy..."):
+        policy = FQFPolicy(
             model=net,
             optim=optim,
-            discount_factor=0.99,
-            estimation_step=3,
-            target_update_freq=200,
+            fraction_model=fraction_net,
+            fraction_optim=fraction_optim,
             action_space=env._action_space,
-            observation_space=env._observation_space,
+            discount_factor=0.95,
+            num_fractions=128,
+            ent_coef=10.0,
+            estimation_step=3,
+            target_update_freq=320,
         ).to(device)
 
     # buffer
     with LogStep("Creating replay buffer..."):
         buf = PrioritizedVectorReplayBuffer(
-            total_size=10000,
+            total_size=20000,
             buffer_num=env.num_envs,
             alpha=0.6,
             beta=0.4,
@@ -72,7 +93,7 @@ def dqn(env: GridVecEnv) -> None:
 
     with LogStep("Creating collector..."):
         collector = Collector(policy, env, buf, exploration_noise=True)
-        
+
     batch_size = 64
     collector.collect(n_step=batch_size * env.num_envs)
 
@@ -89,11 +110,10 @@ def dqn(env: GridVecEnv) -> None:
 
     def train_fn(epoch: int, env_step: int) -> None:
         # eps annnealing, just a demo
-        eps = 0.1
-        # eps = 0.0
-        if env_step <= 10000:
+        eps = 0.7
+        if env_step <= 100000:
             policy.set_eps(eps)
-        elif env_step <= 50000:
+        elif env_step <= 500000:
             # policy.set_eps(0)
             eps = eps - (env_step - 10000) / 40000 * (0.9 * eps)
             policy.set_eps(eps)
@@ -111,7 +131,7 @@ def dqn(env: GridVecEnv) -> None:
             policy=policy,
             train_collector=collector,
             max_epoch=2000,
-            step_per_epoch=100000,
+            step_per_epoch=10000,
             step_per_collect=30,
             episode_per_test=env.num_envs,
             batch_size=batch_size,

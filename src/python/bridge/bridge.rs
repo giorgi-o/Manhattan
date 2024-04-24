@@ -4,7 +4,11 @@ use pyo3::{prelude::*, types::PyList};
 
 use crate::{
     logic::{
-        car::CarPosition, car_agent::AgentAction, ev::ChargingStationId, grid::{Grid, GridOpts}, util::Direction
+        car::CarPosition,
+        car_agent::AgentAction,
+        ev::ChargingStationId,
+        grid::{Grid, GridOpts},
+        util::Direction,
     },
     render::render_main::GridLock,
 };
@@ -183,7 +187,7 @@ impl PythonAgentWrapper {
 // might want to replace with pytorch tensor or something
 type RawAction = Option<usize>;
 
-#[derive(Clone, Hash, Debug)]
+#[derive(Clone, Copy, Hash, Debug)]
 #[pyclass]
 pub struct PyAction {
     #[pyo3(get)]
@@ -218,7 +222,6 @@ impl PyAction {
             raw,
             pick_up_passenger: Some(passenger),
             ..Default::default()
-            
         }
     }
 

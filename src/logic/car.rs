@@ -135,7 +135,7 @@ impl CarPosition {
             old_road_section.section_index,
         );
 
-        let mirrored_section_pos = (0..old_road_section.direction.max_position_in_section())
+        let mirrored_section_pos = (0..=old_road_section.direction.max_position_in_section())
             .rev()
             .nth(self.position_in_section)
             .unwrap();
@@ -295,6 +295,7 @@ pub struct Car {
     pub passengers: Vec<CarPassenger>,
     pub battery: BatteryPercent,
     pub recent_actions: VecDeque<PyAction>,
+    pub ticks_since_out_of_battery: usize,
 }
 
 impl Car {
@@ -308,6 +309,7 @@ impl Car {
             passengers: vec![],
             battery: BatteryPercent::new(battery),
             recent_actions: VecDeque::with_capacity(Self::RECENT_ACTIONS_LEN),
+            ticks_since_out_of_battery: usize::MAX,
         }
     }
 

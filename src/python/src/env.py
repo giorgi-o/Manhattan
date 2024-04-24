@@ -49,13 +49,9 @@ class GridVecEnv(BaseVectorEnv):
         self.MAX_DISTANCE = 100
         self.MAX_TIME = 300
 
-        self.workers = []
+        self.workers: list[GridEnvWorker] = []
         self.workers_ready_for_tick = np.array([False] * self.num_envs)
         self.workers_reset_called = np.array([False] * self.num_envs)
-
-        # the names without leading _s are taken by BaseVectorEnv
-        self._action_space = self.build_action_space()
-        self._observation_space = self.build_observation_space()
 
         # attributes required by tianshou to emulate us being a gym.Env
         self.is_closed = False
@@ -70,10 +66,10 @@ class GridVecEnv(BaseVectorEnv):
         # >>> a = [(lambda: i) for i in range(10)]; a[0]()
         lambdaify = lambda *args: (lambda: args)
         env_fns = [lambdaify(self, i) for i in range(self.num_envs)]
-        worker_fn = lambda env_fn: GridEnvWorder(env_fn)
+        worker_fn = lambda env_fn: GridEnvWorker(env_fn)
         super().__init__(env_fns, worker_fn)  # type: ignore
 
-    def register_worker(self, worker: EnvWorker):
+    def register_worker(self, worker: "GridEnvWorker"):
         assert len(self.workers) < self.num_envs
         self.workers.append(worker)
 
@@ -108,7 +104,14 @@ class GridVecEnv(BaseVectorEnv):
             self.env.tick()
             self.workers_reset_called[:] = False
 
-    def build_observation_space(self) -> gymnasium.spaces.Box:
+    @property
+    def _observation_space(self) -> gymnasium.spaces.Box:
+        # note: self.observation_space and self.action_space
+        # (without _prefix) are taken by BaseVectorEnv
+
+        if hasattr(self, "_observation_space_cache"):
+            return self._observation_space_cache
+
         coords_ospc = [
             self.width,  # x
             self.height,  # y
@@ -165,6 +168,7 @@ class GridVecEnv(BaseVectorEnv):
         can_turn_spc = [2]  # whether the car's action this tick has an effect
         total_passengers_spc = [50]  # how many passengers are on the grid
         prev_action_spc = [2] * self.action_count  # which action did the car take last tick
+        ticks_since_out_of_battery = [self.MAX_TIME]  # whether the car ran out of battery
 
         all_spaces = [
             *can_turn_spc,
@@ -174,21 +178,26 @@ class GridVecEnv(BaseVectorEnv):
             *idle_passengers_ospc,
             *prev_action_spc,
             *charging_stations_ospc,
+            *ticks_since_out_of_battery,
         ]
 
         low = np.zeros(len(all_spaces), dtype=np.float32)
         high = np.array(all_spaces, dtype=np.float32) - 1.0
 
-        return spaces.Box(low=low, high=high, dtype=np.float32)
+        self._observation_space_cache = spaces.Box(low=low, high=high, dtype=np.float32)
+        return self._observation_space_cache
 
-    def build_action_space(self) -> gymnasium.spaces.Discrete:
-        # can pick passenger to drop off, pick up, charge at nearest charging station or to head N/S/E/W
-        self.action_count = (
+    @property
+    def action_count(self) -> int:
+        return (
             self.passengers_per_car  # drop off passenger
             + self.passenger_radius  # pick up passenger
             + 1  # go to nearest charging station
             + 4  # head towards N/S/E/W
         )
+
+    @property
+    def _action_space(self) -> gymnasium.spaces.Discrete:
         return spaces.Discrete(self.action_count)
 
     def parse_action(self, state: GridState, action: int) -> PyAction:
@@ -256,43 +265,49 @@ class GridVecEnv(BaseVectorEnv):
 
         # for passenger in chain(state.idle_passengers, state.pov_car.passengers):
         #     # penalty of "time alive" / 100
-        #     reward -= passenger.ticks_since_request / 100
+        #     reward -= passenger.ticks_since_request / 1000
+
+        events_reward = 0.0
 
         # +100 for every passenger dropped off
-        reward += 100 * len(state.events.car_dropped_off_passenger)
+        events_reward += 100 * len(state.events.car_dropped_off_passenger)
 
         # +5 for every passenger picked up
-        reward += 5 * len(state.events.car_picked_up_passenger)
+        events_reward += 5 * len(state.events.car_picked_up_passenger)
 
-        # -1000 if the car ran out of battery
-        reward -= 1000 * len(state.events.car_out_of_battery)
+        # -500 if the car ran out of battery
+        events_reward -= 500 * len(state.events.car_out_of_battery)
 
-        # if len(pov_car.recent_actions) > 0:
-        #     action = pov_car.recent_actions[0]
+        reward += events_reward
 
-        #     # -10 if action is head_towards
-        #     if action.is_head_towards():
-        #         reward -= 10
+        if len(pov_car.recent_actions) > 0:
+            action = pov_car.recent_actions[0]
 
-        #     else:
-        #         # +3 if action is drop_off
-        #         if action.is_drop_off():
-        #             reward += 3
+            # -1 if action is head_towards
+            if action.is_head_towards():
+                reward -= 1
 
-        #         # +3 for every consecutive time the agent picked this action
-        #         for prev_action in pov_car.recent_actions[1:2]:
-        #             if prev_action == action:
-        #                 reward += 3
-        #             else:
-        #                 break
+            #     else:
+            #         # +3 if action is drop_off
+            #         if action.is_drop_off():
+            #             reward += 3
 
-        # if pov_car.battery < 0.3:
-        #     if action.is_charge():
-        #         reward += 5
-        #     else:
-        #         reward -= 20
+            #         # +3 for every consecutive time the agent picked this action
+            #         for prev_action in pov_car.recent_actions[1:2]:
+            #             if prev_action == action:
+            #                 reward += 3
+            #             else:
+            #                 break
 
-        # if action.is_charge():
+            # if pov_car.battery < 0.1:
+            #     if action.is_charge():
+            #         reward += 0.1
+            #     else:
+            #         reward -= 20
+
+            # if action.is_charge():
+            # reward += 0.1
+
         #     # +3 if car wants to charge when battery is <30%
         #     if state.pov_car.battery < 0.13:
         #         reward += 3
@@ -307,8 +322,8 @@ class GridVecEnv(BaseVectorEnv):
         #         reward -= 20
 
         # if pov_car.pos.in_charging_station:
-            # +0.5 if car is charging
-            # reward += 500.0
+        #     # +0.1 if car is charging
+        #     reward += 0.1
 
         if self.grid_opts.verbose:
             print(f"{reward:.1f}", end=" ", flush=True)
@@ -456,7 +471,8 @@ class GridVecEnv(BaseVectorEnv):
         # return [*self._parse_charging_station(cs, state.pov_car) for cs in state.charging_stations]
         charging_stations = []
         for cs in state.charging_stations:
-            charging_stations.extend(self._parse_charging_station(cs, state.pov_car))
+            parsed_cs = self._parse_charging_station(cs, state.pov_car)
+            charging_stations.extend(parsed_cs)
 
         return charging_stations
 
@@ -465,6 +481,7 @@ class GridVecEnv(BaseVectorEnv):
         can_turn = 1 if state.can_turn else 0
         total_passenger_count = state.total_passenger_count()
         total_passenger_count = min(total_passenger_count, 49)
+        ticks_since_out_of_battery = min(state.pov_car.ticks_since_out_of_battery, self.MAX_TIME - 1)
 
         previous_actions = np.zeros(self.action_count)
         if len(state.pov_car.recent_actions) > 0:
@@ -480,6 +497,7 @@ class GridVecEnv(BaseVectorEnv):
             *self._parse_idle_passengers(state.idle_passengers, state.pov_car),  # idle_passengers
             *previous_actions,
             *self._parse_charging_stations(state),
+            ticks_since_out_of_battery,
         ]
 
         obs = np.array(obs_list, dtype=np.float32)
@@ -519,10 +537,13 @@ class GridVecEnv(BaseVectorEnv):
             # allow keep charging, but don't allow going to the other one
             valid_actions[offset] = True
         else:
-            for i, charging_station in enumerate(state.charging_stations):
-                if not charging_station.is_full():
-                    valid_actions[offset + i] = True
-                break  # tmp-ish: only allow charging at nearest charging station
+            # tmp: can always go to charging station, will just
+            # hover in front if full
+            valid_actions[offset] = True
+            # for i, charging_station in enumerate(state.charging_stations):
+            # if not charging_station.is_full():
+            # valid_actions[offset + i] = True
+            # break  # tmp-ish: only allow charging at nearest charging station
         if valid_actions[offset] == False:
             print("Car can't go to cs!", flush=True)
         offset += 1  # self.charging_station_count
@@ -535,7 +556,7 @@ class GridVecEnv(BaseVectorEnv):
         return valid_actions
 
 
-class GridEnvWorder(EnvWorker):
+class GridEnvWorker(EnvWorker):
     """Class for managing a single car in the env.
     Order in which the functions will be called:
     - ts will call send() with the action for this car
@@ -558,6 +579,8 @@ class GridEnvWorder(EnvWorker):
         self.new_obs: GridState | None = None
         self.reward = 0.0
         self.reset_called = False
+
+        self.pending_events_score = 0.0
 
         super().__init__(lambda: None)  # type: ignore
 
@@ -634,14 +657,15 @@ class GridEnvWorder(EnvWorker):
 
         self.new_obs = new_state
         self.reward = self.vec_env.calculate_reward(new_state, self.action_valid)
+        self.reward += self.pending_events_score
 
     # === USELESS ABC FUNCTIONS ===
 
     def get_env_attr(self, key: str) -> Any:
         if key == "action_space":
-            return self.vec_env.build_action_space()
+            return self.vec_env._action_space
         elif key == "observation_space":
-            return self.vec_env.build_observation_space()
+            return self.vec_env._observation_space
 
         raise NotImplementedError
 
@@ -664,23 +688,6 @@ T = TypeVar("T")
 
 def flatten(x: list[list[T]]) -> list[T]:
     return [item for sublist in x for item in sublist]
-
-
-class Observation(np.ndarray):
-    """custom np.array with a 'mask' attribute"""
-
-    mask: np.ndarray | None
-
-    def __new__(cls, input_array: np.ndarray, input_mask: np.ndarray | None = None):
-        """Create a new Observation object."""
-        obj = np.asarray(input_array).view(cls)
-        obj.mask = input_mask
-        return obj
-
-    def __array_finalize__(self, obj):
-        if obj is None:
-            return
-        self.mask = getattr(obj, "mask", None)
 
 
 class EmptyClass:
