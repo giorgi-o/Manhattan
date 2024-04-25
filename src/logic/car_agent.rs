@@ -279,6 +279,12 @@ impl CarPathAgent for PythonAgent {
         assert!(guard.is_none());
         *guard = Some(half_transition);
 
+        if let Some((_, n_closest)) = py_action.pick_up_passenger {
+            grid.stats.ticks_picking_up_n_closest_passenger[n_closest] += 1;
+        } else if let Some((_, n_closest)) = py_action.drop_off_passenger {
+            grid.stats.ticks_dropping_off_n_closest_passenger[n_closest] += 1;
+        }
+
         // we use this instead of grid.car_mut() so that we only hold the
         // &mut on grid.cars, not the whole grid
         let car = grid.cars.get_mut(&car_id).unwrap();
@@ -289,6 +295,8 @@ impl CarPathAgent for PythonAgent {
 
         let mut path = match agent_action {
             AgentAction::PickUp(passenger_id) => {
+                grid.stats.pick_up_requests += 1;
+
                 grid.assign_car_to_passenger(car_id, passenger_id);
 
                 let passenger = grid
@@ -301,6 +309,8 @@ impl CarPathAgent for PythonAgent {
             }
 
             AgentAction::DropOff(passenger_id) => {
+                grid.stats.drop_off_requests += 1;
+
                 let passenger = car
                     .passengers
                     .iter()
@@ -317,6 +327,8 @@ impl CarPathAgent for PythonAgent {
             }
 
             AgentAction::HeadTowards(direction) => {
+                grid.stats.head_towards_requests += 1;
+
                 let current_road_section = car.position.road_section;
 
                 let possible_decisions = car.position.possible_decisions();
@@ -351,6 +363,8 @@ impl CarPathAgent for PythonAgent {
             }
 
             AgentAction::ChargeBattery(station_id) => {
+                grid.stats.charge_requests += 1;
+
                 let charging_station = grid.charging_stations.get(&station_id).unwrap();
 
                 let positions = [

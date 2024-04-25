@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use crate::logic::{
     car::{Car, CarId, CarPassenger, CarPosition, NextCarPosition},
     ev::{ChargingStation, ChargingStationId},
-    grid::{Grid, GridOpts, TickEvent},
+    grid::{Grid, GridOpts, GridStats, TickEvent},
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
     util::{Direction, RoadSection},
@@ -40,6 +40,8 @@ pub struct PyGridState {
     ticks_passed: usize,
     #[pyo3(get)]
     events: PyTickEvents,
+    #[pyo3(get)]
+    stats: GridStats,
 
     car_radius: usize,
     passenger_radius: usize,
@@ -215,6 +217,7 @@ impl PyGridState {
 
             car_radius: grid.opts.car_radius,
             passenger_radius: grid.opts.passenger_radius,
+            stats: grid.stats.clone(),
         }
     }
 

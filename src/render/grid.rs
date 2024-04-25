@@ -156,7 +156,7 @@ pub struct RoadRenderer<'g> {
 
 impl<'g> RoadRenderer<'g> {
     // todo comment out these 2 they belong on roadcoords now
-    pub const WIDTH: f32 = 60.0;
+    pub const WIDTH: f32 = 40.0;
     pub const OUTLINE_WIDTH: f32 = 2.0;
 
     pub const LANE_DIVIDER_LENGTH: f32 = 25.0;

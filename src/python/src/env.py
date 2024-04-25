@@ -1,3 +1,4 @@
+from pathlib import Path
 import random
 from dataclasses import dataclass
 from itertools import chain
@@ -94,6 +95,9 @@ class GridVecEnv(BaseVectorEnv):
         self.workers_reset_called[index] = True
 
         if np.all(self.workers_reset_called):
+            # before resetting, write stats
+            self.write_episode_stats(self.workers[index])
+
             # for us, resetting is just creating a new rust env and
             # calling tick on it.
             # the workers know we just reset, so the first move will
@@ -103,6 +107,25 @@ class GridVecEnv(BaseVectorEnv):
             self.create_rust_env()
             self.env.tick()
             self.workers_reset_called[:] = False
+
+    def write_episode_stats(self, worker: "GridEnvWorker"):
+        if worker.old_obs is None:
+            return
+        
+        py_state = worker.new_obs or worker.old_obs
+        stats = py_state.stats
+
+        stats_file = Path(__file__).parent.parent.parent.parent / "logs" / "stats.csv"
+        if not stats_file.exists():
+            csv_header = stats.csv_header()
+            with open(stats_file, "w") as f:
+                f.write(csv_header)
+                f.write("\n")
+
+        with open(stats_file, "a") as f:
+            f.write(stats.csv_ify())
+            f.write("\n")
+
 
     @property
     def _observation_space(self) -> gymnasium.spaces.Box:
@@ -176,7 +199,7 @@ class GridVecEnv(BaseVectorEnv):
             *car_ospc,
             *cars_ospc,
             *idle_passengers_ospc,
-            *prev_action_spc,
+            # *prev_action_spc,
             *charging_stations_ospc,
             *ticks_since_out_of_battery,
         ]
@@ -209,7 +232,7 @@ class GridVecEnv(BaseVectorEnv):
             # drop off passenger with that index
             idx = action
             assert idx < len(state.pov_car.passengers)
-            return Action.drop_off_passenger(state.pov_car.passengers[idx], action)
+            return Action.drop_off_passenger(state.pov_car.passengers[idx], action, idx)
         low += self.passengers_per_car
 
         if action < low + self.passenger_radius:
@@ -221,7 +244,7 @@ class GridVecEnv(BaseVectorEnv):
             assert can_pick_up_passengers
 
             idle_passenger = state.idle_passengers[idx]
-            return Action.pick_up_passenger(idle_passenger, action)
+            return Action.pick_up_passenger(idle_passenger, action, idx)
         low += self.passenger_radius
 
         if action < low + 1:
@@ -500,7 +523,7 @@ class GridVecEnv(BaseVectorEnv):
             *self._parse_car(state.pov_car),  # pov_car
             *self._parse_cars(state.other_cars),  # other_cars
             *self._parse_idle_passengers(state.idle_passengers, state.pov_car),  # idle_passengers
-            *previous_actions,
+            # *previous_actions,
             *self._parse_charging_stations(state),
             ticks_since_out_of_battery,
         ]
@@ -529,6 +552,7 @@ class GridVecEnv(BaseVectorEnv):
         offset += self.passenger_radius
 
         # charging station actions
+        charging_station_offset = offset
         current_battery_level = state.pov_car.battery
         is_in_charging_station = state.pov_car.pos.in_charging_station
 
@@ -557,6 +581,19 @@ class GridVecEnv(BaseVectorEnv):
         # head towards actions (always valid)
         valid_actions[offset : offset + 4] = True
         offset += 4
+
+        if is_in_charging_station:
+            if  current_battery_level < 1.0:
+                # force charge till completion
+                valid_actions[:] = False
+                valid_actions[charging_station_offset] = True
+        else:
+            if current_battery_level < 1.0:
+                # can go to charging station if it wants
+                valid_actions[charging_station_offset] = True
+
+        if current_battery_level < 1.0:
+            valid_actions[charging_station_offset] = True
 
         assert offset == self.action_count
         return valid_actions

@@ -193,9 +193,9 @@ pub struct PyAction {
     #[pyo3(get)]
     raw: RawAction,
     #[pyo3(get)]
-    pick_up_passenger: Option<PyPassenger>,
+    pub pick_up_passenger: Option<(PyPassenger, usize /* n closest */)>,
     #[pyo3(get)]
-    drop_off_passenger: Option<PyPassenger>,
+    pub drop_off_passenger: Option<(PyPassenger, usize /* n closest */)>,
     #[pyo3(get)]
     head_towards: Option<Direction>,
     #[pyo3(get)]
@@ -217,19 +217,19 @@ impl Default for PyAction {
 #[pymethods]
 impl PyAction {
     #[staticmethod]
-    fn pick_up_passenger(passenger: PyPassenger, raw: RawAction) -> Self {
+    fn pick_up_passenger(passenger: PyPassenger, raw: RawAction, n_closest: usize) -> Self {
         Self {
             raw,
-            pick_up_passenger: Some(passenger),
+            pick_up_passenger: Some((passenger, n_closest)),
             ..Default::default()
         }
     }
 
     #[staticmethod]
-    fn drop_off_passenger(passenger: PyPassenger, raw: RawAction) -> Self {
+    fn drop_off_passenger(passenger: PyPassenger, raw: RawAction, n_closest: usize) -> Self {
         Self {
             raw,
-            drop_off_passenger: Some(passenger),
+            drop_off_passenger: Some((passenger, n_closest)),
             ..Default::default()
         }
     }
@@ -309,9 +309,9 @@ impl From<&PyAction> for AgentAction {
     fn from(py_action: &PyAction) -> Self {
         py_action.assert_valid();
 
-        if let Some(passenger) = &py_action.pick_up_passenger {
+        if let Some((passenger, _)) = &py_action.pick_up_passenger {
             Self::PickUp(passenger.id)
-        } else if let Some(passenger) = &py_action.drop_off_passenger {
+        } else if let Some((passenger, _)) = &py_action.drop_off_passenger {
             Self::DropOff(passenger.id)
         } else if let Some(head_towards) = py_action.head_towards {
             Self::HeadTowards(head_towards)

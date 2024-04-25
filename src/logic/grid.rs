@@ -95,6 +95,86 @@ pub enum TickEvent {
     CarOutOfBattery(CarId, CarPosition),
 }
 
+#[pyclass]
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct GridStats {
+    pub ticks: usize,
+
+    pub passenger_spawns: usize,
+    pub passenger_pickups: usize,
+    pub passenger_dropoffs: usize,
+
+    pub pick_up_requests: usize,
+    pub drop_off_requests: usize,
+    pub charge_requests: usize,
+    pub head_towards_requests: usize,
+
+    pub enter_charging_stations: usize,
+    pub out_of_battery: usize,
+
+    pub ticks_with_n_passengers: Vec<usize>,
+    pub ticks_picking_up_n_closest_passenger: Vec<usize>,
+    pub ticks_dropping_off_n_closest_passenger: Vec<usize>,
+}
+
+#[pymethods]
+impl GridStats {
+    pub fn csv_header(&self) -> String {
+        let mut headers = vec![
+            "ticks",
+            "passenger_spawns",
+            "passenger_pickups",
+            "passenger_dropoffs",
+            "pick_up_requests",
+            "drop_off_requests",
+            "charge_requests",
+            "head_towards_requests",
+            "enter_charging_stations",
+            "out_of_battery",
+        ];
+        let mut headers = headers.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        for n in 0..self.ticks_with_n_passengers.len() {
+            headers.push(format!("ticks_with_{}_passengers", n));
+        }
+        for n in 0..self.ticks_picking_up_n_closest_passenger.len() {
+            headers.push(format!("ticks_picking_up_{}_closest_passenger", n+1));
+        }
+        for n in 0..self.ticks_dropping_off_n_closest_passenger.len() {
+            headers.push(format!("ticks_dropping_off_{}_closest_passenger", n+1));
+        }
+
+        headers.join(",")
+    }
+
+    pub fn csv_ify(&self) -> String {
+        let mut values = vec![
+            self.ticks.to_string(),
+            self.passenger_spawns.to_string(),
+            self.passenger_pickups.to_string(),
+            self.passenger_dropoffs.to_string(),
+            self.pick_up_requests.to_string(),
+            self.drop_off_requests.to_string(),
+            self.charge_requests.to_string(),
+            self.head_towards_requests.to_string(),
+            self.enter_charging_stations.to_string(),
+            self.out_of_battery.to_string(),
+        ];
+
+        for n in 0..self.ticks_with_n_passengers.len() {
+            values.push(self.ticks_with_n_passengers[n].to_string());
+        }
+        for n in 0..self.ticks_picking_up_n_closest_passenger.len() {
+            values.push(self.ticks_picking_up_n_closest_passenger[n].to_string());
+        }
+        for n in 0..self.ticks_dropping_off_n_closest_passenger.len() {
+            values.push(self.ticks_dropping_off_n_closest_passenger[n].to_string());
+        }
+
+        values.join(",")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[pyclass]
 pub struct GridOpts {
@@ -169,6 +249,7 @@ pub struct Grid {
     pub charging_stations: HashMap<ChargingStationId, ChargingStation>,
 
     pub ticks_passed: usize,
+    pub stats: GridStats,
 
     pub tick_state: Option<PyGridState>,
     pub tick_events: Vec<TickEvent>,
@@ -199,6 +280,11 @@ impl Grid {
         );
         let waiting_passengers = Self::generate_passengers(opts.initial_passenger_count);
 
+        let mut stats = GridStats::default();
+        stats.ticks_with_n_passengers = vec![0; opts.passengers_per_car + 1];
+        stats.ticks_picking_up_n_closest_passenger = vec![0; opts.passenger_radius + 1];
+        stats.ticks_dropping_off_n_closest_passenger = vec![0; opts.passenger_radius + 1];
+
         let mut this = Self {
             opts: opts.clone(),
 
@@ -214,6 +300,7 @@ impl Grid {
             charging_stations,
 
             ticks_passed: 0,
+            stats,
 
             tick_state: None,
             tick_events: Vec::new(),
@@ -374,6 +461,7 @@ impl Grid {
 
         self.tick_state = None;
         self.ticks_passed += 1;
+        self.stats.ticks += 1;
 
         let post_tick_state = PyGridState::build(self);
         self.send_transition_result(post_tick_state);
@@ -452,6 +540,9 @@ impl Grid {
                 let car = self.car(car_id);
                 let next_position = car.next_position(decision, neighbour_cs);
 
+                let car_passenger_count = car.passengers.len();
+                self.stats.ticks_with_n_passengers[car_passenger_count] += 1;
+
                 // if there is a car already there -> don't move there, cause that
                 // car might not move (e.g. red light)
                 // if there will be a car there next turn -> don't move either
@@ -497,7 +588,7 @@ impl Grid {
 
                 // tick car battery
                 if !car.props.agent.is_npc() {
-                    // car.battery.discharge(car.props.discharge_rate);
+                    car.battery.discharge(car.props.discharge_rate);
                     // car.battery.discharge(0.01);
                 }
 
@@ -513,6 +604,8 @@ impl Grid {
                     // note: if the car was in the charging station with a
                     // negative battery and tried to leave, let it. it will
                     // be punished and brought right back here next tick >:)
+
+                    self.stats.out_of_battery += 1;
                 } else {
                     let old_position = car.position;
 
@@ -539,6 +632,8 @@ impl Grid {
 
                         assert!(cs.has_space());
                         cs.cars.push(car.id());
+
+                        self.stats.enter_charging_stations += 1;
                     }
                 }
             } else {
@@ -719,6 +814,8 @@ impl Grid {
             self.waiting_passenger_positions
                 .insert(passenger.start, passenger.id);
             self.waiting_passengers.insert(passenger.id, passenger);
+
+            self.stats.passenger_spawns += 1;
         }
 
         // pick up & drop off passengers
@@ -734,6 +831,7 @@ impl Grid {
                             // print!("Car dropped off passenger! ");
                             let event = TickEvent::PassengerDroppedOff(car.props.id, passenger);
                             self.tick_events.push(event);
+                            self.stats.passenger_dropoffs += 1;
                         } else {
                             // if we don't drop the passenger off, we keep them
                             car.passengers.push(CarPassenger::DroppingOff(passenger));
@@ -763,7 +861,8 @@ impl Grid {
                             car.passengers.push(car_passenger);
 
                             // print!("Car picked up passenger! ");
-                            std::io::stdout().flush().unwrap();
+                            // std::io::stdout().flush().unwrap();
+                            self.stats.passenger_pickups += 1;
                         }
                     }
                 }

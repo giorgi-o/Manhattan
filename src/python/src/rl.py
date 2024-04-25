@@ -25,6 +25,10 @@ from tianshou.utils.space_info import SpaceInfo
 from env import GridVecEnv
 from util import LogStep
 
+# note: "on" = overnight, 25 = date 25/04
+# LOAD_POLICY = "rainbow_on_25"
+LOAD_POLICY = None
+
 
 def dqn(env: GridVecEnv) -> None:
     space_info = SpaceInfo.from_spaces(env._action_space, env._observation_space)
@@ -60,6 +64,12 @@ def dqn(env: GridVecEnv) -> None:
             action_space=env._action_space,
             observation_space=env._observation_space,
         ).to(device)
+
+    if LOAD_POLICY is not None:
+        with LogStep("Loading saved policy..."):
+            policy_path = Path(__file__).parent.parent.parent.parent / "logs" / LOAD_POLICY / "best_policy.pth"
+            loaded = torch.load(policy_path, map_location=device)
+            policy.load_state_dict(loaded)
 
     # buffer
     with LogStep("Creating replay buffer..."):
@@ -98,6 +108,10 @@ def dqn(env: GridVecEnv) -> None:
         return False
 
     def train_fn(epoch: int, env_step: int) -> None:
+        # tmp: test
+        # policy.set_eps(0.0)
+        # return
+
         high_eps = 0.7
         low_eps = 0.01
         cycle_length = 100000
@@ -136,8 +150,8 @@ def dqn(env: GridVecEnv) -> None:
             update_per_step=0.1,
             train_fn=train_fn,
             stop_fn=stop_fn,
-            save_best_fn=save_best_fn,
-            logger=logger,
+            # save_best_fn=save_best_fn,
+            # logger=logger,
         )
 
     result = trainer.run()

@@ -111,7 +111,7 @@ impl Graph {
         let roads = possible_decisions
             .into_iter()
             .filter(|d| *d != CarDecision::ChargeBattery)
-            .map(|d| node.section().take_decision(d).unwrap());
+            .filter_map(|d| node.section().take_decision(d));
         let car_positions = roads.map(|r| CarPosition {
             road_section: r,
             position_in_section: 0,

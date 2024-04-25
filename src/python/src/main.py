@@ -26,6 +26,18 @@ def start(rust):
             section_index=3,
             position_in_section=3,
         ),
+        rust.CarPosition(
+            direction=rust.Direction.Left,
+            road_index=7,
+            section_index=5,
+            position_in_section=3,
+        ),
+        rust.CarPosition(
+            direction=rust.Direction.Right,
+            road_index=9,
+            section_index=7,
+            position_in_section=3,
+        ),
     ]
 
     grid_opts = rust.GridOpts(
@@ -39,10 +51,10 @@ def start(rust):
         charging_station_capacity=1,
         passenger_radius=5,
         car_radius=3,
-        verbose=False,
+        verbose=True,
     )
     env_opts = EnvOpts(
-        render=False,
+        render=True,
     )
 
     with LogStep("Creating environment..."):
