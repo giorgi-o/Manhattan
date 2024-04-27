@@ -119,6 +119,9 @@ pub struct GridStats {
 
 #[pymethods]
 impl GridStats {
+    const MAX_PASSENGERS_PER_CAR: usize = 4;
+    const MAX_PASSENGER_RADIUS: usize = 5;
+
     pub fn csv_header(&self) -> String {
         let headers = vec![
             "ticks",
@@ -134,14 +137,14 @@ impl GridStats {
         ];
         let mut headers = headers.iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
-        for n in 0..self.ticks_with_n_passengers.len() {
+        for n in 0..=Self::MAX_PASSENGERS_PER_CAR {
             headers.push(format!("ticks_with_{}_passengers", n));
         }
-        for n in 0..self.ticks_picking_up_n_closest_passenger.len() {
-            headers.push(format!("ticks_picking_up_{}_closest_passenger", n + 1));
+        for n in 0..=Self::MAX_PASSENGER_RADIUS {
+            headers.push(format!("ticks_picking_up_{}_closest_passenger", n));
         }
-        for n in 0..self.ticks_dropping_off_n_closest_passenger.len() {
-            headers.push(format!("ticks_dropping_off_{}_closest_passenger", n + 1));
+        for n in 0..=Self::MAX_PASSENGER_RADIUS {
+            headers.push(format!("ticks_dropping_off_{}_closest_passenger", n));
         }
 
         headers.join(",") + "\n"
@@ -161,14 +164,23 @@ impl GridStats {
             self.out_of_battery.to_string(),
         ];
 
-        for n in 0..self.ticks_with_n_passengers.len() {
-            values.push(self.ticks_with_n_passengers[n].to_string());
+        for n in 0..=Self::MAX_PASSENGERS_PER_CAR {
+            let value = self.ticks_with_n_passengers.get(n).unwrap_or(&0);
+            values.push(value.to_string());
         }
-        for n in 0..self.ticks_picking_up_n_closest_passenger.len() {
-            values.push(self.ticks_picking_up_n_closest_passenger[n].to_string());
+        for n in 0..=Self::MAX_PASSENGER_RADIUS {
+            let value = self
+                .ticks_picking_up_n_closest_passenger
+                .get(n)
+                .unwrap_or(&0);
+            values.push(value.to_string());
         }
-        for n in 0..self.ticks_dropping_off_n_closest_passenger.len() {
-            values.push(self.ticks_dropping_off_n_closest_passenger[n].to_string());
+        for n in 0..=Self::MAX_PASSENGER_RADIUS {
+            let value = self
+                .ticks_dropping_off_n_closest_passenger
+                .get(n)
+                .unwrap_or(&0);
+            values.push(value.to_string());
         }
 
         values.join(",") + "\n"
