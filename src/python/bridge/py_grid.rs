@@ -71,6 +71,31 @@ impl PyGridState {
                 .map(|car| car.passengers.len())
                 .sum::<usize>()
     }
+
+    fn write_stats(&self) {
+        let mut manhattan_dir = std::env::current_exe().unwrap();
+        while manhattan_dir.file_name().unwrap().to_str() != Some("manhattan") {
+            let has_parent = manhattan_dir.pop();
+            assert!(
+                has_parent,
+                "Could not find manhattan/ dir! Is the .exe in there?"
+            );
+        }
+
+        let stats_path = manhattan_dir.join("logs").join("stats.csv");
+        if !stats_path.exists() || stats_path.metadata().unwrap().len() == 0 {
+            let csv_header = self.stats.csv_header();
+            std::fs::write(&stats_path, csv_header).unwrap();
+        }
+
+        let mut stats_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(stats_path)
+            .unwrap();
+
+        let csv_row = self.stats.csv_ify();
+        std::io::Write::write_all(&mut stats_file, csv_row.as_bytes()).unwrap();
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
@@ -113,6 +138,8 @@ pub struct PyCar {
     recent_actions: Vec<PyAction>,
     #[pyo3(get)]
     ticks_since_out_of_battery: usize,
+    #[pyo3(get)]
+    active_action: Option<PyAction>,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
@@ -448,6 +475,7 @@ impl PyCar {
             battery: car.battery.get(),
             recent_actions,
             ticks_since_out_of_battery,
+            active_action: car.active_action,
         }
     }
 }

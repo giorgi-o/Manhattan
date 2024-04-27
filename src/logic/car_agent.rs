@@ -1,5 +1,5 @@
 use crate::{
-    logic::util::RoadSection,
+    logic::{car::Car, util::RoadSection},
     python::bridge::{
         bridge::{PyAction, PythonAgentWrapper},
         py_grid::PyGridState,
@@ -11,7 +11,7 @@ use std::{io::Write, sync::Mutex};
 use super::{
     car::{CarDecision, CarId, CarPassenger, CarPosition},
     ev::ChargingStationId,
-    grid::Grid,
+    grid::{Grid, GridStats},
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
     util::Direction,
@@ -151,11 +151,12 @@ impl CarPathAgent for RandomDestination {
             let car = grid.car(car_id);
             let destination = CarPosition::random(&mut rand::thread_rng());
 
-            let path = car.find_path(destination);
+            let mut path = car.find_path(destination);
             if path.next_decision().is_none() {
                 continue;
             }
 
+            path.action = Some(AgentAction::HeadTowards(Direction::Up));
             self.path = Some(path);
             break;
         }
@@ -182,10 +183,7 @@ impl NearestPassenger {
         // find closest one
         let closest_passenger = waiting_passengers
             .into_iter()
-            .min_by_key(|p| {
-                let path_to_passenger = grid.car(car_id).find_path(p.start);
-                path_to_passenger.cost
-            })
+            .min_by_key(|p| grid.car_position(car_id).distance_to(p.start))
             .unwrap();
         Some(closest_passenger)
     }
@@ -193,7 +191,30 @@ impl NearestPassenger {
 
 impl CarPathAgent for NearestPassenger {
     fn calculate_path(&mut self, grid: &mut Grid, car_id: CarId) {
-        if grid.car(car_id).passengers.is_empty() {
+        let car = grid.car(car_id);
+        if let Some(cs_id) = car.position.in_charging_station {
+            if car.battery.get() < 1.0 {
+                let cs = grid.charging_stations.get(&cs_id).unwrap();
+                let mut path = car.position.path_to(cs.entrance);
+                path.action = Some(AgentAction::ChargeBattery(cs_id));
+                self.path = Some(path);
+                return;
+            }
+        } else if car.battery.get() < 0.1 {
+            let cs_ids_and_paths = grid
+                .charging_stations
+                .values()
+                .filter(|cs| cs.has_space())
+                .map(|cs| (cs.id, car.position.path_to(cs.entrance)));
+            let cs_id_and_path = cs_ids_and_paths.min_by_key(|(_, p)| p.cost);
+            if let Some((cs_id, mut path)) = cs_id_and_path {
+                path.action = Some(AgentAction::ChargeBattery(cs_id));
+                self.path = Some(path);
+                return;
+            }
+        }
+
+        if car.passengers.is_empty() {
             // assign ourselves to the closest passenger
             let closest_passenger = self.pick_passenger(grid, car_id);
             let Some(closest_passenger) = closest_passenger else {
@@ -213,10 +234,17 @@ impl CarPathAgent for NearestPassenger {
         let path = match &first_passenger {
             CarPassenger::PickingUp(passenger_id) => {
                 let passenger = grid.get_idle_passenger(*passenger_id).unwrap();
-                car.find_path(passenger.start)
+                let mut path = car.find_path(passenger.start);
+
+                path.action = Some(AgentAction::PickUp(*passenger_id));
+                path
             }
 
-            CarPassenger::DroppingOff(passenger) => car.find_path(passenger.destination),
+            CarPassenger::DroppingOff(passenger) => {
+                let mut path = car.find_path(passenger.destination);
+                path.action = Some(AgentAction::DropOff(passenger.id));
+                path
+            }
         };
 
         self.path = Some(path);
@@ -244,15 +272,22 @@ pub struct PythonAgent {
     // state and reward, we send the full transitions to
     // python to learn from
     half_transitions: Mutex<Option<(PyGridState, PyAction)>>,
+
+    deterministic_agent: Option<NearestPassenger>,
 }
 
 impl PythonAgent {
     pub fn new(python_wrapper: PythonAgentWrapper) -> Self {
+        const DETERMINISTIC_MODE: bool = true;
+        let deterministic_agent = DETERMINISTIC_MODE.then(|| NearestPassenger::default());
+
         Self {
             path: None,
 
             python_wrapper,
             half_transitions: Mutex::new(None),
+
+            deterministic_agent,
         }
     }
 
@@ -278,6 +313,12 @@ impl CarPathAgent for PythonAgent {
         let mut guard = self.half_transitions.lock().unwrap();
         assert!(guard.is_none());
         *guard = Some(half_transition);
+
+        if let Some(agent) = &mut self.deterministic_agent {
+            agent.calculate_path(grid, car_id);
+            self.path = agent.get_path().cloned();
+            return;
+        }
 
         if let Some((_, n_closest)) = py_action.pick_up_passenger {
             grid.stats.ticks_picking_up_n_closest_passenger[n_closest] += 1;
@@ -381,14 +422,24 @@ impl CarPathAgent for PythonAgent {
         path.action = Some(agent_action);
         self.path = Some(path);
 
-        let car = grid.car(car_id);
-        let passenger_count = car
-            .passengers
-            .iter()
-            .filter(|p| p.is_dropping_off())
-            .count();
+        let verbose = grid.opts.verbose;
+        let car = grid.car_mut(car_id);
 
-        if grid.opts.verbose {
+        if matches!(agent_action, AgentAction::HeadTowards(_)) && car.position.position_in_section == 0
+        {
+            // the agent just reached where it wanted to HeadTowards
+            car.active_action = None;
+        } else {
+            car.active_action = Some(py_action);
+        }
+
+        if verbose {
+            let passenger_count = car
+                .passengers
+                .iter()
+                .filter(|p| p.is_dropping_off())
+                .count();
+
             print!("{agent_action_dbg: <25} {passenger_count: <2} ");
             std::io::stdout().flush().unwrap();
         }

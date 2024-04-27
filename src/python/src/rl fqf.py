@@ -15,69 +15,72 @@ from tianshou.data import (
     VectorReplayBuffer,
 )
 from tianshou.env import DummyVectorEnv
-from tianshou.policy import RainbowPolicy
+from tianshou.policy import RainbowPolicy, FQFPolicy
 from tianshou.policy.base import BasePolicy
 from tianshou.trainer import OffpolicyTrainer
 from tianshou.utils import TensorboardLogger
 from tianshou.utils.net.common import Net
+from tianshou.utils.net.discrete import FullQuantileFunction, FractionProposalNetwork
 from tianshou.utils.space_info import SpaceInfo
 
 from env import GridVecEnv
 from util import LogStep
 
-# note: "on" = overnight, 25 = date 25/04
-# LOAD_POLICY = "rainbow_on_25"
-# LOAD_POLICY = "rainbow_on_26"
-LOAD_POLICY = "rainbow_on_27/checkpoint_139.pth"
-# LOAD_POLICY = None
-
 
 def dqn(env: GridVecEnv) -> None:
     space_info = SpaceInfo.from_spaces(env._action_space, env._observation_space)
+
     # seed
     seed = 42
     np.random.seed(seed)
     torch.manual_seed(seed)
     env.seed(seed)
-    # Q_param = V_param = {"hidden_sizes": [128]}
+
     # model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    with LogStep("Creating neural network..."):
-        net = Net(
+    with LogStep("Creating feature network..."):
+        feature_net = Net(
             state_shape=space_info.observation_info.obs_shape,
-            action_shape=space_info.action_info.action_shape,
-            hidden_sizes=[256, 256, 256],
+            action_shape=256,
+            hidden_sizes=[256, 256],
             device=device,
-            softmax=True,
-            num_atoms=51,
+            softmax=False,
+            # softmax=True,
+            # num_atoms=51,
+        ).to(device)
+
+    with LogStep("Creating full quantile function..."):
+        net = FullQuantileFunction(
+            feature_net,
+            space_info.action_info.action_shape,
+            [256, 256, 256],
+            64,
+            device=device,
         ).to(device)
 
     with LogStep("Creating optimizer..."):
         optim = torch.optim.Adam(net.parameters(), lr=1e-3)
 
-    with LogStep("Creating DQN policy..."):
-        policy = RainbowPolicy(
+    with LogStep("Creating fraction network..."):
+        fraction_net = FractionProposalNetwork(128, embedding_dim=net.input_dim)
+
+    with LogStep("Creating fraction optimiser..."):
+        fraction_optim = torch.optim.Adam(fraction_net.parameters(), lr=1e-3)
+
+    with LogStep("Creating FQF policy..."):
+        policy = FQFPolicy(
             model=net,
             optim=optim,
-            discount_factor=0.999,
-            estimation_step=3,
-            target_update_freq=1000,
+            fraction_model=fraction_net,
+            fraction_optim=fraction_optim,
             action_space=env._action_space,
-            observation_space=env._observation_space,
+            discount_factor=0.999,
+            num_fractions=128,
+            ent_coef=10.0,
+            estimation_step=3,
+            target_update_freq=320,
         ).to(device)
-
-    if LOAD_POLICY is not None:
-        with LogStep("Loading saved policy..."):
-            policy_path = (
-                Path(__file__).parent.parent.parent.parent / "logs" / LOAD_POLICY
-            )
-            loaded = torch.load(policy_path, map_location=device)
-            if "model" in loaded:
-                policy.load_state_dict(loaded["model"])
-                optim.load_state_dict(loaded["optim"])
-            else:
-                policy.load_state_dict(loaded)
 
     # buffer
     with LogStep("Creating replay buffer..."):
@@ -95,32 +98,17 @@ def dqn(env: GridVecEnv) -> None:
     collector.collect(n_step=batch_size * env.num_envs)
 
     with LogStep("Creating tensorboard logger..."):
-        log_path = Path(__file__).parent.parent.parent.parent / "logs" / "dqn"
+        log_path = Path(__file__).parent.parent.parent.parent / "logs" / "fqf"
         writer = SummaryWriter(log_path)
         logger = TensorboardLogger(writer)
 
     def save_best_fn(policy: BasePolicy) -> None:
-        torch.save(policy.state_dict(), log_path / "best_policy.pth")
-
-    def save_checkpoint_fn(epoch: int, env_step: int, gradient_step: int) -> str:
-        # see also: https://pytorch.org/tutorials/beginner/saving_loading_models.html
-        checkpoint_path = log_path  / f"checkpoint_{epoch}.pth"
-        torch.save(
-            {
-                "model": policy.state_dict(),
-                "optim": optim.state_dict(),
-            },
-            checkpoint_path,
-        )
-
-        return str(checkpoint_path)
+        torch.save(policy.state_dict(), log_path / "policy.pth")
 
     def stop_fn(mean_rewards: float) -> bool:
         return False
 
     def train_fn(epoch: int, env_step: int) -> None:
-        # policy.set_eps(0.0); return
-
         high_eps = 0.7
         low_eps = 0.01
         cycle_length = 100000
@@ -133,6 +121,10 @@ def dqn(env: GridVecEnv) -> None:
             policy.set_eps(eps)
         else:
             policy.set_eps(low_eps)
+
+    def test_fn(epoch: int, env_step: int | None) -> None:
+        eps = 0.05
+        policy.set_eps(eps)
 
     # trainer
     with LogStep("Creating trainer..."):
@@ -148,7 +140,6 @@ def dqn(env: GridVecEnv) -> None:
             train_fn=train_fn,
             stop_fn=stop_fn,
             save_best_fn=save_best_fn,
-            save_checkpoint_fn=save_checkpoint_fn,
             logger=logger,
         )
 

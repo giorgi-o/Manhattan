@@ -3,6 +3,7 @@ print("Rust is importing main.py...")
 import time
 
 import debugpy
+import random
 from stable_baselines3 import A2C
 
 from env import GridVecEnv, EnvOpts
@@ -13,52 +14,12 @@ from rl import dqn
 def start(rust):
     # start_debug()
 
-    charging_stations_pos = [
-        rust.CarPosition(
-            direction=rust.Direction.Up,
-            road_index=1,
-            section_index=1,
-            position_in_section=3,
-        ),
-        rust.CarPosition(
-            direction=rust.Direction.Down,
-            road_index=5,
-            section_index=3,
-            position_in_section=3,
-        ),
-        rust.CarPosition(
-            direction=rust.Direction.Left,
-            road_index=7,
-            section_index=5,
-            position_in_section=3,
-        ),
-        rust.CarPosition(
-            direction=rust.Direction.Right,
-            road_index=9,
-            section_index=7,
-            position_in_section=3,
-        ),
-    ]
-
-    grid_opts = rust.GridOpts(
-        initial_passenger_count=20,
-        passenger_spawn_rate=0.0,
-        max_passengers=30,
-        agent_car_count=5,
-        npc_car_count=15,
-        passengers_per_car=4,
-        charging_stations=charging_stations_pos,
-        charging_station_capacity=1,
-        passenger_radius=5,
-        car_radius=3,
-        verbose=True,
-    )
     env_opts = EnvOpts(
         render=True,
     )
 
     with LogStep("Creating environment..."):
-        env = GridVecEnv(rust, grid_opts, env_opts)
+        env = GridVecEnv(rust, env_opts)
 
     dqn(env)
 

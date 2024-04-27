@@ -10,7 +10,7 @@ use super::{
 pub struct BatteryPercent(f32);
 
 impl BatteryPercent {
-    const MIN_BATTERY: f32 = -0.1;
+    const MIN_BATTERY: f32 = -1.0;
 
     pub fn new(percent: f32) -> Self {
         assert!(percent >= Self::MIN_BATTERY && percent <= 1.0);

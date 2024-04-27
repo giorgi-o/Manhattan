@@ -120,7 +120,7 @@ pub struct GridStats {
 #[pymethods]
 impl GridStats {
     pub fn csv_header(&self) -> String {
-        let mut headers = vec![
+        let headers = vec![
             "ticks",
             "passenger_spawns",
             "passenger_pickups",
@@ -138,13 +138,13 @@ impl GridStats {
             headers.push(format!("ticks_with_{}_passengers", n));
         }
         for n in 0..self.ticks_picking_up_n_closest_passenger.len() {
-            headers.push(format!("ticks_picking_up_{}_closest_passenger", n+1));
+            headers.push(format!("ticks_picking_up_{}_closest_passenger", n + 1));
         }
         for n in 0..self.ticks_dropping_off_n_closest_passenger.len() {
-            headers.push(format!("ticks_dropping_off_{}_closest_passenger", n+1));
+            headers.push(format!("ticks_dropping_off_{}_closest_passenger", n + 1));
         }
 
-        headers.join(",")
+        headers.join(",") + "\n"
     }
 
     pub fn csv_ify(&self) -> String {
@@ -171,7 +171,7 @@ impl GridStats {
             values.push(self.ticks_dropping_off_n_closest_passenger[n].to_string());
         }
 
-        values.join(",")
+        values.join(",") + "\n"
     }
 }
 
@@ -195,6 +195,8 @@ pub struct GridOpts {
     #[pyo3(get)]
     pub charging_station_capacity: usize,
     #[pyo3(get)]
+    pub discharge_rate: f32,
+    #[pyo3(get)]
     pub car_radius: usize,
     #[pyo3(get)]
     pub passenger_radius: usize,
@@ -214,6 +216,7 @@ impl GridOpts {
         passengers_per_car: usize,
         charging_stations: Vec<CarPosition>,
         charging_station_capacity: usize,
+        discharge_rate: f32,
         car_radius: usize,
         passenger_radius: usize,
         verbose: bool,
@@ -227,6 +230,7 @@ impl GridOpts {
             passengers_per_car,
             charging_stations,
             charging_station_capacity,
+            discharge_rate,
             car_radius,
             passenger_radius,
             verbose,
@@ -264,7 +268,7 @@ impl Grid {
     pub const TRAFFIC_LIGHT_TOGGLE_TICKS: usize = 60; // 3s at 20TPS
 
     pub const CAR_SPEED: usize = 3;
-    pub const CAR_DISCHARGE_RATE: f32 = 0.002; // can go 500 ticks without charging
+    // pub const CAR_DISCHARGE_RATE: f32 = 0.002; // can go 500 ticks without charging
 
     // pub const MAX_TOTAL_PASSENGERS: usize = Self::HORIZONTAL_ROADS * Self::VERTICAL_ROADS;
     // pub const MAX_WAITING_PASSENGERS: usize = Self::MAX_TOTAL_PASSENGERS / 2;
@@ -318,27 +322,18 @@ impl Grid {
 
         // spawn required npc cars
         for _ in 0..opts.npc_car_count {
-            let npc_props = CarProps::new(
-                RandomTurns {},
-                Self::CAR_SPEED,
-                Self::CAR_DISCHARGE_RATE,
-                BLUE,
-            );
+            let npc_props = CarProps::new(RandomTurns {}, Self::CAR_SPEED, 0.0, BLUE);
             this.add_car(npc_props, None);
         }
 
         // spawn required agent cars
         let mut python_agents = python_agents.into_iter();
-        let agent_car_colours = [RED, GREEN, ORANGE, PURPLE];
+        let agent_car_colours = [RED, GREEN, ORANGE, PURPLE, PINK];
         for i in 0..opts.agent_car_count {
             let python_agent = PythonAgent::new(python_agents.next().unwrap());
             let colour = agent_car_colours[i as usize % agent_car_colours.len()];
-            let agent_props = CarProps::new(
-                python_agent,
-                Self::CAR_SPEED,
-                Self::CAR_DISCHARGE_RATE,
-                colour,
-            );
+            let agent_props =
+                CarProps::new(python_agent, Self::CAR_SPEED, opts.discharge_rate, colour);
             this.add_car(agent_props, None);
         }
 
@@ -581,6 +576,7 @@ impl Grid {
                 assert!(cs.cars.contains(&car.id()), "{:?} not in cs.cars", car.id());
 
                 car.battery.charging(cs);
+                car.active_action = None;
             }
 
             if car.position != next_position {
@@ -701,7 +697,7 @@ impl Grid {
 
                     // spawn the car at the charging station
                     let position = CarPosition::at_charging_station(closest_charging_station);
-                    let mut car = Car::new(car_to_spawn.props, position, -0.1);
+                    let mut car = Car::new(car_to_spawn.props, position, -1.0);
                     car.passengers = passengers;
 
                     // self.car_positions.insert(position, car.id());
@@ -712,7 +708,11 @@ impl Grid {
 
                 let pos_is_taken = |pos: &_| self.car_positions.contains_key(pos);
                 let car_position = car_to_spawn.position(&mut rng, pos_is_taken);
-                let car = Car::new(car_to_spawn.props, car_position, 0.05);
+                let initial_battery = match self.opts.discharge_rate == 0.0 {
+                    true => 1.0, // if battery never discharges, always have full battery
+                    false => 0.2,
+                };
+                let car = Car::new(car_to_spawn.props, car_position, initial_battery);
 
                 // self.car_positions.insert(car_position, car.id());
                 // self.cars.insert(car.id(), car);
@@ -832,6 +832,7 @@ impl Grid {
                             let event = TickEvent::PassengerDroppedOff(car.props.id, passenger);
                             self.tick_events.push(event);
                             self.stats.passenger_dropoffs += 1;
+                            car.active_action = None;
                         } else {
                             // if we don't drop the passenger off, we keep them
                             car.passengers.push(CarPassenger::DroppingOff(passenger));
@@ -863,6 +864,7 @@ impl Grid {
                             // print!("Car picked up passenger! ");
                             // std::io::stdout().flush().unwrap();
                             self.stats.passenger_pickups += 1;
+                            car.active_action = None;
                         }
                     }
                 }

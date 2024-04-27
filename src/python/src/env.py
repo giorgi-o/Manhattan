@@ -27,23 +27,95 @@ class EnvOpts:
     render: bool
 
 
+VARIANT = 3
+PASSENGER_COUNT = 20
+SPAWN_MORE_PASSENGERS = False
+
+
+# None = random
+def generate_grid_opts(
+    rust, variant: int | None = None, passengers: int | None = None, spawn_more_passengers: bool | None = None
+):
+    if variant is None:
+        variant = VARIANT or random.randint(1, 3)
+    if passengers is None:
+        passengers = PASSENGER_COUNT or random.randint(10, 50)
+    if spawn_more_passengers is None:
+        spawn_more_passengers = SPAWN_MORE_PASSENGERS
+        if spawn_more_passengers is None:
+            spawn_more_passengers = random.random() > 0.7
+
+    charging_stations_pos = [
+        rust.CarPosition(
+            direction=rust.Direction.Up,
+            road_index=1,
+            section_index=1,
+            position_in_section=3,
+        ),
+        rust.CarPosition(
+            direction=rust.Direction.Down,
+            road_index=5,
+            section_index=3,
+            position_in_section=3,
+        ),
+        rust.CarPosition(
+            direction=rust.Direction.Left,
+            road_index=7,
+            section_index=5,
+            position_in_section=3,
+        ),
+        rust.CarPosition(
+            direction=rust.Direction.Right,
+            road_index=9,
+            section_index=7,
+            position_in_section=3,
+        ),
+    ]
+
+    grid_opts_args = {}
+    match variant:
+        case 1:
+            grid_opts_args["passengers_per_car"] = 1
+            grid_opts_args["discharge_rate"] = 0.0
+        case 2:
+            grid_opts_args["passengers_per_car"] = 4
+            grid_opts_args["discharge_rate"] = 0.0
+        case 3:
+            grid_opts_args["passengers_per_car"] = 4
+            grid_opts_args["discharge_rate"] = 0.002
+
+    grid_opts = rust.GridOpts(
+        initial_passenger_count=passengers,
+        passenger_spawn_rate=0.0,
+        max_passengers=30,
+        agent_car_count=5,
+        npc_car_count=15,
+        # passengers_per_car=1,
+        charging_stations=charging_stations_pos,
+        charging_station_capacity=1,
+        # discharge_rate=0.002,
+        passenger_radius=5,
+        car_radius=3,
+        verbose=True,
+        **grid_opts_args,
+    )
+
+    return grid_opts
+
+
 class GridVecEnv(BaseVectorEnv):
     def __init__(
         self,
         rust: RustModule,
-        grid_opts: GridOpts,
+        # grid_opts: GridOpts,
         env_opts: EnvOpts,
     ):
         self.rust = rust
-        self.grid_opts = grid_opts
+        self.grid_opts = generate_grid_opts(rust)
         self.env_opts = env_opts
 
-        self.passenger_radius = grid_opts.passenger_radius
-        self.car_radius = grid_opts.car_radius
-        self.passengers_per_car = grid_opts.passengers_per_car
-        self.charging_station_count = len(grid_opts.charging_stations)
-        self.charging_station_capacity = grid_opts.charging_station_capacity
-        self.num_envs = grid_opts.agent_car_count
+        self.car_passenger_slots = 4
+        self.num_envs = self.grid_opts.agent_car_count
         self.width, self.height = rust.grid_dimensions()
 
         self.TICKS_PER_EPISODE = 10000
@@ -70,6 +142,26 @@ class GridVecEnv(BaseVectorEnv):
         worker_fn = lambda env_fn: GridEnvWorker(env_fn)
         super().__init__(env_fns, worker_fn)  # type: ignore
 
+    @property
+    def passenger_radius(self) -> int:
+        return self.grid_opts.passenger_radius
+
+    @property
+    def car_radius(self) -> int:
+        return self.grid_opts.car_radius
+
+    @property
+    def passengers_per_car(self) -> int:
+        return self.grid_opts.passengers_per_car
+
+    @property
+    def charging_station_count(self) -> int:
+        return len(self.grid_opts.charging_stations)
+
+    @property
+    def charging_station_capacity(self) -> int:
+        return self.grid_opts.charging_station_capacity
+
     def register_worker(self, worker: "GridEnvWorker"):
         assert len(self.workers) < self.num_envs
         self.workers.append(worker)
@@ -79,6 +171,7 @@ class GridVecEnv(BaseVectorEnv):
             self.create_rust_env()
 
     def create_rust_env(self):
+        self.grid_opts = generate_grid_opts(self.rust)
         self.env = self.rust.PyGridEnv(self.workers, self.grid_opts, self.env_opts.render)
 
     def ready_for_tick(self, index: int):
@@ -111,21 +204,20 @@ class GridVecEnv(BaseVectorEnv):
     def write_episode_stats(self, worker: "GridEnvWorker"):
         if worker.old_obs is None:
             return
-        
+
         py_state = worker.new_obs or worker.old_obs
-        stats = py_state.stats
+        py_state.write_stats()
 
-        stats_file = Path(__file__).parent.parent.parent.parent / "logs" / "stats.csv"
-        if not stats_file.exists():
-            csv_header = stats.csv_header()
-            with open(stats_file, "w") as f:
-                f.write(csv_header)
-                f.write("\n")
+        # stats = py_state.stats
 
-        with open(stats_file, "a") as f:
-            f.write(stats.csv_ify())
-            f.write("\n")
+        # stats_file = Path(__file__).parent.parent.parent.parent / "logs" / "stats.csv"
+        # if not stats_file.exists():
+        #     csv_header = stats.csv_header()
+        #     with open(stats_file, "w") as f:
+        #         f.write(csv_header)
 
+        # with open(stats_file, "a") as f:
+        #     f.write(stats.csv_ify())
 
     @property
     def _observation_space(self) -> gymnasium.spaces.Box:
@@ -149,7 +241,7 @@ class GridVecEnv(BaseVectorEnv):
             self.MAX_TIME + 1,  # time_since_request
         ]
         car_passengers_ospc: list[int] = []
-        for _ in range(self.passengers_per_car):
+        for _ in range(self.car_passenger_slots):
             car_passengers_ospc.extend(car_passenger_ospc)
 
         idle_passenger_ospc = [
@@ -213,7 +305,7 @@ class GridVecEnv(BaseVectorEnv):
     @property
     def action_count(self) -> int:
         return (
-            self.passengers_per_car  # drop off passenger
+            self.car_passenger_slots  # drop off passenger
             + self.passenger_radius  # pick up passenger
             + 1  # go to nearest charging station
             + 4  # head towards N/S/E/W
@@ -228,12 +320,12 @@ class GridVecEnv(BaseVectorEnv):
         Direction = self.rust.Direction
         low = 0
 
-        if action < self.passengers_per_car:
+        if action < self.car_passenger_slots:
             # drop off passenger with that index
             idx = action
             assert idx < len(state.pov_car.passengers)
             return Action.drop_off_passenger(state.pov_car.passengers[idx], action, idx)
-        low += self.passengers_per_car
+        low += self.car_passenger_slots
 
         if action < low + self.passenger_radius:
             # pick up passenger
@@ -415,7 +507,7 @@ class GridVecEnv(BaseVectorEnv):
 
         null_passenger = self._null_passenger()
         neurons_per_passenger = len(null_passenger)
-        while len(passengers) < self.passengers_per_car * neurons_per_passenger:
+        while len(passengers) < self.car_passenger_slots * neurons_per_passenger:
             passengers.extend(null_passenger)
 
         return passengers
@@ -457,7 +549,7 @@ class GridVecEnv(BaseVectorEnv):
         ]
 
     def _null_car(self) -> list[int]:
-        passengers = [self._null_passenger()] * self.passengers_per_car
+        passengers = [self._null_passenger()] * self.car_passenger_slots
         return [
             *self._null_coords(),  # pos
             0,  # in charging station
@@ -537,12 +629,35 @@ class GridVecEnv(BaseVectorEnv):
         """Returns an array the size of the action space, with True if
         that action is valid and False if it isn't."""
         valid_actions = np.array([False] * self.action_count)
+
+        active_action = state.pov_car.active_action
+        if active_action is not None:
+            # the agent's last action has not been fulfilled yet,
+            # keep picking it
+
+            # find which neuron it corresponds to
+            # idx = next(i for i in range(self.action_count) if self.parse_action(state, i) == active_action)
+            idx = None
+            for i in range(self.action_count):
+                try:
+                    if self.parse_action(state, i) == active_action:
+                        idx = i
+                        break
+                except AssertionError:  # invalid action index
+                    pass
+
+            # idx might be None e.g. if the passenger just got picked
+            # up by another car
+            if idx is not None:
+                valid_actions[idx] = True
+                return valid_actions
+
         offset = 0
 
         # drop off actions
         passenger_count = len(state.pov_car.passengers)
         valid_actions[offset : offset + passenger_count] = True
-        offset += self.passengers_per_car
+        offset += self.car_passenger_slots
 
         # pick up actions
         can_pick_up_passengers = passenger_count < self.passengers_per_car
@@ -579,11 +694,14 @@ class GridVecEnv(BaseVectorEnv):
         offset += 1  # self.charging_station_count
 
         # head towards actions (always valid)
-        valid_actions[offset : offset + 4] = True
+        # valid_actions[offset : offset + 4] = True
+        # valid only if nothing else is valid
+        if not valid_actions.any():
+            valid_actions[offset : offset + 4] = True
         offset += 4
 
         if is_in_charging_station:
-            if  current_battery_level < 1.0:
+            if current_battery_level < 1.0:
                 # force charge till completion
                 valid_actions[:] = False
                 valid_actions[charging_station_offset] = True

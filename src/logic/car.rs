@@ -322,6 +322,7 @@ pub struct Car {
     pub battery: BatteryPercent,
     pub recent_actions: VecDeque<PyAction>,
     pub ticks_since_out_of_battery: usize,
+    pub active_action: Option<PyAction>,
 }
 
 impl Car {
@@ -336,6 +337,7 @@ impl Car {
             battery: BatteryPercent::new(battery),
             recent_actions: VecDeque::with_capacity(Self::RECENT_ACTIONS_LEN),
             ticks_since_out_of_battery: usize::MAX,
+            active_action: None,
         }
     }
 
