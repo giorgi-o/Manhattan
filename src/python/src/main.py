@@ -4,7 +4,6 @@ import time
 
 import debugpy
 import random
-from stable_baselines3 import A2C
 
 from env import GridVecEnv, EnvOpts
 from util import LogStep
