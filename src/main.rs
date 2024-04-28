@@ -9,6 +9,7 @@ mod logic {
     pub mod passenger;
     pub mod pathfinding;
     pub mod util;
+    pub mod grid_util;
 }
 
 mod render {

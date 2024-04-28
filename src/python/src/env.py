@@ -72,6 +72,15 @@ def generate_grid_opts(
         ),
     ]
 
+    passenger_events = [
+        rust.PassengerEvent(
+            start_area=(0, 0, 2, 2),
+            destination_area=(-2, -2, -0.0, -0.0),
+            spawn_rate=0.5,
+            between_ticks=(None, None),
+        )
+    ]
+
     grid_opts_args = {}
     match variant:
         case 1:
@@ -94,8 +103,9 @@ def generate_grid_opts(
         charging_stations=charging_stations_pos,
         charging_station_capacity=1,
         # discharge_rate=0.002,
-        passenger_radius=5,
         car_radius=3,
+        passenger_radius=5,
+        passenger_events=passenger_events,
         verbose=True,
         **grid_opts_args,
     )
@@ -378,7 +388,8 @@ class GridVecEnv(BaseVectorEnv):
             reward += 5000
         else:
             # -1 for every passenger on the grid
-            reward -= total_passengers
+            # reward -= total_passengers
+            reward -= 1
 
         # for passenger in chain(state.idle_passengers, state.pov_car.passengers):
         #     # penalty of "time alive" / 100

@@ -4,11 +4,8 @@ use pyo3::{prelude::*, types::PyList};
 
 use crate::{
     logic::{
-        car::CarPosition,
-        car_agent::AgentAction,
-        ev::ChargingStationId,
-        grid::{Grid, GridOpts},
-        util::Direction,
+        car::CarPosition, car_agent::AgentAction, ev::ChargingStationId, grid::Grid,
+        grid_util::{GridOpts, PassengerEvent}, util::Direction,
     },
     render::render_main::GridLock,
 };
@@ -100,6 +97,7 @@ fn exported_python_module<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>
     module.add_class::<Direction>()?;
     module.add_class::<PyCarType>()?;
     module.add_class::<CarPosition>()?;
+    module.add_class::<PassengerEvent>()?;
 
     module.add_function(wrap_pyfunction!(grid_dimensions, &module)?)?;
     module.add_function(wrap_pyfunction!(calculate_distance, &module)?)?;

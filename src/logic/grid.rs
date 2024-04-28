@@ -14,241 +14,10 @@ use super::{
     car::{Car, CarDecision, CarId, CarPassenger, CarPosition, CarProps, CarToSpawn},
     car_agent::{NullAgent, PythonAgent, RandomTurns},
     ev::{ChargingStation, ChargingStationId},
+    grid_util::{GridOpts, GridStats, LightState, PassengerEvent, TickEvent, TrafficLight},
     passenger::{Passenger, PassengerId},
     util::{hashmap_with_capacity, HashMap, HashSet, Orientation, RoadSection},
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[pyclass]
-pub enum LightState {
-    Red,
-    Green,
-}
-
-impl LightState {
-    pub fn toggle(&mut self) {
-        *self = match self {
-            LightState::Red => LightState::Green,
-            LightState::Green => LightState::Red,
-        }
-    }
-
-    pub fn random(mut rng: impl Rng) -> Self {
-        match rng.gen() {
-            true => LightState::Green,
-            false => LightState::Red,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[pyclass]
-pub struct TrafficLight {
-    #[pyo3(get)]
-    pub toggle_every_ticks: usize,
-    #[pyo3(get)]
-    pub state: LightState,
-    #[pyo3(get)]
-    pub ticks_left: usize,
-}
-
-impl TrafficLight {
-    pub fn tick(&mut self) {
-        if self.ticks_left > 0 {
-            self.ticks_left -= 1;
-        } else {
-            self.state.toggle();
-            self.ticks_left = self.toggle_every_ticks;
-        }
-    }
-
-    // see what the light will be like in X ticks
-    pub fn time_travel(&self, ticks: usize) -> Self {
-        let state_changes = ticks / self.toggle_every_ticks;
-        let remainder = ticks % self.toggle_every_ticks;
-
-        let mut new_state = self.state;
-        if state_changes % 2 == 1 {
-            new_state.toggle();
-        }
-
-        let mut ticks_left = self.ticks_left;
-        if remainder <= ticks_left {
-            ticks_left -= remainder;
-        } else {
-            new_state.toggle();
-            ticks_left = self.toggle_every_ticks - remainder;
-        }
-
-        Self {
-            toggle_every_ticks: self.toggle_every_ticks,
-            state: new_state,
-            ticks_left,
-        }
-    }
-}
-
-pub enum TickEvent {
-    PassengerSpawned(PassengerId),
-    PassengerPickedUp(CarId, PassengerId),
-    PassengerDroppedOff(CarId, Passenger),
-    CarOutOfBattery(CarId, CarPosition),
-}
-
-#[pyclass]
-#[derive(Default, Debug, Clone, PartialEq)]
-pub struct GridStats {
-    pub ticks: usize,
-
-    pub passenger_spawns: usize,
-    pub passenger_pickups: usize,
-    pub passenger_dropoffs: usize,
-
-    pub pick_up_requests: usize,
-    pub drop_off_requests: usize,
-    pub charge_requests: usize,
-    pub head_towards_requests: usize,
-
-    pub enter_charging_stations: usize,
-    pub out_of_battery: usize,
-
-    pub ticks_with_n_passengers: Vec<usize>,
-    pub ticks_picking_up_n_closest_passenger: Vec<usize>,
-    pub ticks_dropping_off_n_closest_passenger: Vec<usize>,
-}
-
-#[pymethods]
-impl GridStats {
-    const MAX_PASSENGERS_PER_CAR: usize = 4;
-    const MAX_PASSENGER_RADIUS: usize = 5;
-
-    pub fn csv_header(&self) -> String {
-        let headers = vec![
-            "ticks",
-            "passenger_spawns",
-            "passenger_pickups",
-            "passenger_dropoffs",
-            "pick_up_requests",
-            "drop_off_requests",
-            "charge_requests",
-            "head_towards_requests",
-            "enter_charging_stations",
-            "out_of_battery",
-        ];
-        let mut headers = headers.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-
-        for n in 0..=Self::MAX_PASSENGERS_PER_CAR {
-            headers.push(format!("ticks_with_{}_passengers", n));
-        }
-        for n in 0..=Self::MAX_PASSENGER_RADIUS {
-            headers.push(format!("ticks_picking_up_{}_closest_passenger", n));
-        }
-        for n in 0..=Self::MAX_PASSENGER_RADIUS {
-            headers.push(format!("ticks_dropping_off_{}_closest_passenger", n));
-        }
-
-        headers.join(",") + "\n"
-    }
-
-    pub fn csv_ify(&self) -> String {
-        let mut values = vec![
-            self.ticks.to_string(),
-            self.passenger_spawns.to_string(),
-            self.passenger_pickups.to_string(),
-            self.passenger_dropoffs.to_string(),
-            self.pick_up_requests.to_string(),
-            self.drop_off_requests.to_string(),
-            self.charge_requests.to_string(),
-            self.head_towards_requests.to_string(),
-            self.enter_charging_stations.to_string(),
-            self.out_of_battery.to_string(),
-        ];
-
-        for n in 0..=Self::MAX_PASSENGERS_PER_CAR {
-            let value = self.ticks_with_n_passengers.get(n).unwrap_or(&0);
-            values.push(value.to_string());
-        }
-        for n in 0..=Self::MAX_PASSENGER_RADIUS {
-            let value = self
-                .ticks_picking_up_n_closest_passenger
-                .get(n)
-                .unwrap_or(&0);
-            values.push(value.to_string());
-        }
-        for n in 0..=Self::MAX_PASSENGER_RADIUS {
-            let value = self
-                .ticks_dropping_off_n_closest_passenger
-                .get(n)
-                .unwrap_or(&0);
-            values.push(value.to_string());
-        }
-
-        values.join(",") + "\n"
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[pyclass]
-pub struct GridOpts {
-    #[pyo3(get)]
-    pub initial_passenger_count: u32, // number of passengers on the grid at the start
-    #[pyo3(get)]
-    pub passenger_spawn_rate: f32, // chance of spawning a new passenger per tick
-    #[pyo3(get)]
-    pub max_passengers: usize,
-    #[pyo3(get)]
-    pub agent_car_count: u32,
-    #[pyo3(get)]
-    pub npc_car_count: u32,
-    #[pyo3(get)]
-    pub passengers_per_car: usize,
-    #[pyo3(get)]
-    pub charging_stations: Vec<CarPosition>,
-    #[pyo3(get)]
-    pub charging_station_capacity: usize,
-    #[pyo3(get)]
-    pub discharge_rate: f32,
-    #[pyo3(get)]
-    pub car_radius: usize,
-    #[pyo3(get)]
-    pub passenger_radius: usize,
-    #[pyo3(get)]
-    pub verbose: bool,
-}
-
-#[pymethods]
-impl GridOpts {
-    #[new]
-    fn new(
-        initial_passenger_count: u32,
-        passenger_spawn_rate: f32,
-        max_passengers: usize,
-        agent_car_count: u32,
-        npc_car_count: u32,
-        passengers_per_car: usize,
-        charging_stations: Vec<CarPosition>,
-        charging_station_capacity: usize,
-        discharge_rate: f32,
-        car_radius: usize,
-        passenger_radius: usize,
-        verbose: bool,
-    ) -> Self {
-        Self {
-            initial_passenger_count,
-            passenger_spawn_rate,
-            max_passengers,
-            agent_car_count,
-            npc_car_count,
-            passengers_per_car,
-            charging_stations,
-            charging_station_capacity,
-            discharge_rate,
-            car_radius,
-            passenger_radius,
-            verbose,
-        }
-    }
-}
 
 pub struct Grid {
     pub opts: GridOpts,
@@ -284,7 +53,7 @@ impl Grid {
 
     // pub const MAX_TOTAL_PASSENGERS: usize = Self::HORIZONTAL_ROADS * Self::VERTICAL_ROADS;
     // pub const MAX_WAITING_PASSENGERS: usize = Self::MAX_TOTAL_PASSENGERS / 2;
-    pub const MAX_WAITING_PASSENGERS: usize = 20;
+    // pub const MAX_WAITING_PASSENGERS: usize = 20;
 
     pub fn new(opts: GridOpts, python_agents: Vec<PythonAgentWrapper>) -> Self {
         assert_eq!(opts.agent_car_count, python_agents.len() as u32);
@@ -294,7 +63,6 @@ impl Grid {
             &opts.charging_stations,
             opts.charging_station_capacity,
         );
-        let waiting_passengers = Self::generate_passengers(opts.initial_passenger_count);
 
         let mut stats = GridStats::default();
         stats.ticks_with_n_passengers = vec![0; opts.passengers_per_car + 1];
@@ -307,7 +75,7 @@ impl Grid {
             cars: HashMap::default(),
             car_positions: HashMap::default(),
 
-            waiting_passengers,
+            waiting_passengers: HashMap::default(),
             waiting_passenger_positions: HashMap::default(),
 
             cars_to_spawn: Vec::new(),
@@ -322,15 +90,8 @@ impl Grid {
             tick_events: Vec::new(),
         };
 
-        // tmp: spawn X random cars
-        // for _ in 0..1 {
-        //     // let agent = RandomTurns {};
-        //     // let agent = RandomDestination::default();
-        //     // let agent = NearestPassenger::default();
-        //     let agent = PythonAgent::default();
-        //     let car = CarProps::new(agent, 3);
-        //     this.add_car(car);
-        // }
+        // spawn passengers
+        this.generate_passengers();
 
         // spawn required npc cars
         for _ in 0..opts.npc_car_count {
@@ -382,17 +143,71 @@ impl Grid {
             .collect()
     }
 
-    fn generate_passengers(count: u32) -> HashMap<PassengerId, Passenger> {
-        let mut waiting_passengers = hashmap_with_capacity(Self::MAX_WAITING_PASSENGERS);
+    fn generate_passengers(&mut self) {
+        assert_eq!(self.ticks_passed, 0);
+
+        let count = self.opts.initial_passenger_count;
+        self.waiting_passengers = hashmap_with_capacity(count as usize);
 
         let mut rng = rand::thread_rng();
-
         for _ in 0..count {
-            let passenger = Passenger::random(&mut rng, 0);
-            waiting_passengers.insert(passenger.id, passenger);
+            let passenger = self.generate_passenger(&mut rng);
+            self.waiting_passengers.insert(passenger.id, passenger);
+        }
+    }
+
+    fn current_passenger_event(&self) -> Option<&PassengerEvent> {
+        self.opts.passenger_events.iter().find(|event| {
+            let (start_tick, end_tick) = &event.between_ticks;
+            if start_tick.is_some_and(|start| self.ticks_passed < start)
+                || end_tick.is_some_and(|end| self.ticks_passed > end)
+            {
+                return false;
+            }
+            true
+        })
+    }
+
+    fn generate_passenger(&self, mut rng: impl Rng) -> Passenger {
+        let event = self.current_passenger_event();
+
+        for _ in 0..1000 {
+            let passenger = match event {
+                Some(event) => Passenger::random_in_event(&mut rng, self.ticks_passed, event),
+                None => Passenger::random(&mut rng, self.ticks_passed),
+            };
+
+            // if there's a passenger event currently, respect it
+            if let Some(event) = event {
+                let (sx1, sy1, sx2, sy2) = event.start_area;
+                let (sx, sy) = passenger.start.road_section.checkerboard_coords();
+                if sx < sx1 || sx > sx2 || sy < sy1 || sy > sy2 {
+                    panic!("generated passenger outside of passenger event area");
+                }
+
+                let (dx1, dy1, dx2, dy2) = event.destination_area;
+                let (dx, dy) = passenger.destination.road_section.checkerboard_coords();
+                if dx < dx1 || dx > dx2 || dy < dy1 || dy > dy2 {
+                    panic!("generated passenger outside of passenger event area");
+                }
+            }
+
+            // make sure we don't spawn a passenger where there is one already
+            let passenger_start_is_taken = self
+                .waiting_passenger_positions
+                .contains_key(&passenger.start);
+            // also don't spawn one if there is a charging station there
+            let passenger_start_is_charging_station =
+                self.charging_station_entrance_at(passenger.start).is_some();
+
+            if passenger_start_is_taken || passenger_start_is_charging_station {
+                continue; // try again
+            }
+
+            return passenger;
         }
 
-        waiting_passengers
+        panic!("could not generate passenger, is the event area too small?");
     }
 
     pub fn cars(&self) -> impl Iterator<Item = &Car> {
@@ -800,25 +615,15 @@ impl Grid {
 
     fn tick_passengers(&mut self) {
         // spawn passengers
+        let passenger_spawn_rate_this_tick = self
+            .current_passenger_event()
+            .and_then(|e| e.spawn_rate)
+            .unwrap_or(self.opts.passenger_spawn_rate);
         let mut rng = rand::thread_rng();
         while self.waiting_passengers.len() < self.opts.max_passengers
-            && rng.gen::<f32>() < self.opts.passenger_spawn_rate
+            && rng.gen::<f32>() < passenger_spawn_rate_this_tick
         {
-            let passenger = loop {
-                let passenger = Passenger::random(&mut rng, self.ticks_passed);
-
-                // make sure we don't spawn a passenger where there is one already
-                let passenger_start_is_taken = self
-                    .waiting_passenger_positions
-                    .contains_key(&passenger.start);
-                // also don't spawn one if there is a charging station there
-                let passenger_start_is_charging_station =
-                    self.charging_station_entrance_at(passenger.start).is_some();
-
-                if !passenger_start_is_taken && !passenger_start_is_charging_station {
-                    break passenger;
-                }
-            };
+            let passenger = self.generate_passenger(&mut rng);
 
             let event = TickEvent::PassengerSpawned(passenger.id);
             self.tick_events.push(event);

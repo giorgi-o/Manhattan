@@ -244,6 +244,34 @@ impl RoadSection {
         Self::get(direction, road_index, section_index)
     }
 
+    pub fn random_in_area(mut rng: impl Rng, area: (f32, f32, f32, f32)) -> Self {
+        let direction = Direction::random(&mut rng);
+        let (x1, y1, x2, y2) = area;
+
+        for _ in 0..1000 {
+            let road_index;
+            let section_index;
+
+            if direction.is_horizontal() {
+                road_index = rng.gen_range(y1 as usize..y2 as usize);
+                section_index = rng.gen_range(x1 as usize..x2 as usize);
+            } else {
+                road_index = rng.gen_range(x1 as usize..x2 as usize);
+                section_index = rng.gen_range(y1 as usize..y2 as usize);
+            }
+
+            let this = Self::get(direction, road_index, section_index);
+            let (x, y) = this.checkerboard_coords();
+
+            if x >= x1 && x <= x2 && y >= y1 && y <= y2 {
+                return this;
+            }
+
+        }
+
+        panic!("Failed to find random section in area {:?}", area);
+    }
+
     pub fn valid(self) -> Result<(), String> {
         if self.road_index < 0 || self.road_index as usize > self.direction.max_road_index() {
             return Err(format!(

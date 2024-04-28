@@ -14,6 +14,7 @@ use super::{
     car_agent::CarAgent,
     ev::{BatteryPercent, ChargingStation, ChargingStationId},
     grid::Grid,
+    grid_util::PassengerEvent,
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
     util::{Direction, RoadSection},
@@ -85,6 +86,18 @@ impl CarPosition {
         Self {
             position_in_section: rng
                 .gen_range(0..=road_section.direction.max_position_in_section()),
+            road_section,
+            in_charging_station: None,
+        }
+    }
+
+    pub fn random_in_area(mut rng: impl Rng, area: (f32, f32, f32, f32)) -> Self {
+        let road_section = RoadSection::random_in_area(&mut rng, area);
+        let position_in_section =
+            rng.gen_range(0..=road_section.direction.max_position_in_section());
+
+        Self {
+            position_in_section,
             road_section,
             in_charging_station: None,
         }

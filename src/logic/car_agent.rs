@@ -11,7 +11,8 @@ use std::{io::Write, sync::Mutex};
 use super::{
     car::{CarDecision, CarId, CarPassenger, CarPosition},
     ev::ChargingStationId,
-    grid::{Grid, GridStats},
+    grid::Grid,
+    grid_util::GridStats,
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
     util::Direction,
@@ -425,7 +426,8 @@ impl CarPathAgent for PythonAgent {
         let verbose = grid.opts.verbose;
         let car = grid.car_mut(car_id);
 
-        if matches!(agent_action, AgentAction::HeadTowards(_)) && car.position.position_in_section == 0
+        if matches!(agent_action, AgentAction::HeadTowards(_))
+            && car.position.position_in_section == 0
         {
             // the agent just reached where it wanted to HeadTowards
             car.active_action = None;

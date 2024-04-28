@@ -5,7 +5,8 @@ use pyo3::prelude::*;
 use crate::logic::{
     car::{Car, CarId, CarPassenger, CarPosition, NextCarPosition},
     ev::{ChargingStation, ChargingStationId},
-    grid::{Grid, GridOpts, GridStats, TickEvent},
+    grid::Grid,
+    grid_util::{GridOpts, GridStats, TickEvent},
     passenger::{Passenger, PassengerId},
     pathfinding::Path,
     util::{Direction, RoadSection},

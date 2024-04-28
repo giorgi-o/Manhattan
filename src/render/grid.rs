@@ -1,8 +1,7 @@
 use macroquad::prelude::*;
 
 use crate::logic::{
-    grid::{Grid, LightState},
-    util::{Direction, Orientation, RoadSection},
+    grid::Grid, grid_util::LightState, util::{Direction, Orientation, RoadSection}
 };
 
 use super::{
