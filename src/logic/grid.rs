@@ -103,10 +103,13 @@ impl Grid {
         let mut python_agents = python_agents.into_iter();
         let agent_car_colours = [RED, GREEN, ORANGE, PURPLE, PINK];
         for i in 0..opts.agent_car_count {
-            let python_agent = PythonAgent::new(python_agents.next().unwrap());
+            let python_wrapper = python_agents.next().unwrap();
+            let python_agent = PythonAgent::new(python_wrapper, opts.deterministic_mode);
+            
             let colour = agent_car_colours[i as usize % agent_car_colours.len()];
             let agent_props =
                 CarProps::new(python_agent, Self::CAR_SPEED, opts.discharge_rate, colour);
+            
             this.add_car(agent_props, None);
         }
 

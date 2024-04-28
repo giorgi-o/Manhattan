@@ -300,6 +300,8 @@ pub struct GridOpts {
     #[pyo3(get)]
     pub passenger_events: Vec<PassengerEvent>,
     #[pyo3(get)]
+    pub deterministic_mode: bool,
+    #[pyo3(get)]
     pub verbose: bool,
 }
 
@@ -319,6 +321,7 @@ impl GridOpts {
         car_radius: usize,
         passenger_radius: usize,
         passenger_events: Vec<PassengerEvent>,
+        deterministic_mode: bool,
         verbose: bool,
     ) -> Self {
         Self {
@@ -334,6 +337,7 @@ impl GridOpts {
             car_radius,
             passenger_radius,
             passenger_events,
+            deterministic_mode,
             verbose,
         }
     }

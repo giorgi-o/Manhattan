@@ -28,8 +28,9 @@ from util import LogStep
 # note: "on" = overnight, 25 = date 25/04
 # LOAD_POLICY = "rainbow_on_25"
 # LOAD_POLICY = "rainbow_on_26"
-# LOAD_POLICY = "rainbow_on_27/checkpoint_139.pth"
-LOAD_POLICY = None
+LOAD_POLICY = "rainbow_on_27/checkpoint_139.pth"
+# LOAD_POLICY = None
+ZERO_EPSILON = True
 
 
 def dqn(env: GridVecEnv) -> None:
@@ -119,7 +120,9 @@ def dqn(env: GridVecEnv) -> None:
         return False
 
     def train_fn(epoch: int, env_step: int) -> None:
-        # policy.set_eps(0.0); return
+        if ZERO_EPSILON:
+            policy.set_eps(0.0)
+            return
 
         high_eps = 0.7
         low_eps = 0.01

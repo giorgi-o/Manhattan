@@ -14,12 +14,8 @@ from rl import dqn
 def start(rust):
     # start_debug()
 
-    env_opts = EnvOpts(
-        render=True,
-    )
-
     with LogStep("Creating environment..."):
-        env = GridVecEnv(rust, env_opts)
+        env = GridVecEnv(rust)
 
     dqn(env)
 

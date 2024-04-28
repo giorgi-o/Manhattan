@@ -27,9 +27,11 @@ class EnvOpts:
     render: bool
 
 
-VARIANT = 3
-PASSENGER_COUNT = 20
+VARIANT = 1
+AGENT_COUNT = 3
+PASSENGER_COUNT = 30
 SPAWN_MORE_PASSENGERS = False
+VERBOSE_AND_RENDER = False
 
 
 # None = random
@@ -97,16 +99,18 @@ def generate_grid_opts(
         initial_passenger_count=passengers,
         passenger_spawn_rate=0.0,
         max_passengers=30,
-        agent_car_count=5,
-        npc_car_count=15,
+        agent_car_count=AGENT_COUNT,
+        npc_car_count=0,
         # passengers_per_car=1,
         charging_stations=charging_stations_pos,
         charging_station_capacity=1,
         # discharge_rate=0.002,
         car_radius=3,
         passenger_radius=5,
-        passenger_events=passenger_events,
-        verbose=True,
+        # passenger_events=passenger_events,
+        passenger_events=[],
+        deterministic_mode=False,
+        verbose=VERBOSE_AND_RENDER,
         **grid_opts_args,
     )
 
@@ -118,8 +122,12 @@ class GridVecEnv(BaseVectorEnv):
         self,
         rust: RustModule,
         # grid_opts: GridOpts,
-        env_opts: EnvOpts,
+        # env_opts: EnvOpts,
     ):
+        env_opts = EnvOpts(
+            render=VERBOSE_AND_RENDER,
+        )
+
         self.rust = rust
         self.grid_opts = generate_grid_opts(rust)
         self.env_opts = env_opts

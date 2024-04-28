@@ -278,9 +278,8 @@ pub struct PythonAgent {
 }
 
 impl PythonAgent {
-    pub fn new(python_wrapper: PythonAgentWrapper) -> Self {
-        const DETERMINISTIC_MODE: bool = true;
-        let deterministic_agent = DETERMINISTIC_MODE.then(|| NearestPassenger::default());
+    pub fn new(python_wrapper: PythonAgentWrapper, deterministic_mode: bool) -> Self {
+        let deterministic_agent = deterministic_mode.then(|| NearestPassenger::default());
 
         Self {
             path: None,
