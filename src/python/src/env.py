@@ -102,7 +102,7 @@ def generate_grid_opts(
 
     grid_opts = rust.GridOpts(
         initial_passenger_count=passengers,
-        passenger_spawn_rate=0.0,
+        passenger_spawn_rate=passenger_spawn_rate,
         max_passengers=30,
         agent_car_count=AGENT_COUNT,
         npc_car_count=0,
