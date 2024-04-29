@@ -32,6 +32,7 @@ AGENT_COUNT = 3
 PASSENGER_COUNT = 30
 SPAWN_MORE_PASSENGERS = False
 VERBOSE_AND_RENDER = False
+DETERMINISTIC = True
 
 
 # None = random
@@ -48,7 +49,7 @@ def generate_grid_opts(
             spawn_more_passengers = random.random() > 0.7
     
     if spawn_more_passengers:
-        passenger_spawn_rate = 0.05
+        passenger_spawn_rate = 0.005
     else:
         passenger_spawn_rate = 0.0
 
@@ -114,7 +115,7 @@ def generate_grid_opts(
         passenger_radius=5,
         # passenger_events=passenger_events,
         passenger_events=[],
-        deterministic_mode=False,
+        deterministic_mode=DETERMINISTIC,
         verbose=VERBOSE_AND_RENDER,
         **grid_opts_args,
     )
