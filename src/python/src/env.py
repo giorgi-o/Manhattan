@@ -46,6 +46,11 @@ def generate_grid_opts(
         spawn_more_passengers = SPAWN_MORE_PASSENGERS
         if spawn_more_passengers is None:
             spawn_more_passengers = random.random() > 0.7
+    
+    if spawn_more_passengers:
+        passenger_spawn_rate = 0.05
+    else:
+        passenger_spawn_rate = 0.0
 
     charging_stations_pos = [
         rust.CarPosition(
