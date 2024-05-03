@@ -25,11 +25,8 @@ from tianshou.utils.space_info import SpaceInfo
 from env import GridVecEnv
 from util import LogStep
 
-# note: "on" = overnight, 25 = date 25/04
-# LOAD_POLICY = "rainbow_on_25"
-# LOAD_POLICY = "rainbow_on_26"
-LOAD_POLICY = "rainbow_on_27/checkpoint_139.pth"
-# LOAD_POLICY = None
+
+LOAD_POLICY = None
 ZERO_EPSILON = True
 
 
